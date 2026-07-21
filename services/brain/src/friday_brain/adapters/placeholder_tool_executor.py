@@ -54,6 +54,7 @@ class PlaceholderToolExecutor:
         task: Task,
         checkpoint_id: UUID,
         idempotency_key: str,
+        lease_token: UUID | None = None,
     ) -> Any:
         if not self._tool_policy.is_allowed(step.operation):
             raise ToolNotAllowedError(step.operation)
@@ -67,7 +68,8 @@ class PlaceholderToolExecutor:
                 idempotency_key=idempotency_key,
                 task_id=task.id,
                 checkpoint_id=checkpoint_id,
-            )
+            ),
+            lease_token=lease_token,
         )
 
         if not result.success:

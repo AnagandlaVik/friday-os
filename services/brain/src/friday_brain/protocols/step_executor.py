@@ -14,6 +14,7 @@ class StepExecutor(Protocol):
         task: Task,
         checkpoint_id: UUID,
         idempotency_key: str,
+        lease_token: UUID | None = None,
     ) -> Any:
         """Execute one durable step inside its tool boundary."""
         ...

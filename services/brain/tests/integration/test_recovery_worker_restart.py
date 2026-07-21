@@ -63,6 +63,7 @@ class ControlledStepExecutor:
         task: Task,
         checkpoint_id: UUID,
         idempotency_key: str,
+        lease_token: UUID | None = None,
     ) -> Any:
         del task
 
