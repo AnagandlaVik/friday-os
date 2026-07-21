@@ -371,6 +371,61 @@ class PostgresExecutionPlanRepository:
             },
         )
 
+    async def resume_checkpoint(
+        self,
+        checkpoint_id: UUID,
+        lease_token: UUID,
+    ) -> StepCheckpoint | None:
+        """
+        Reclaim a checkpoint left executing after a worker lost its lease.
+
+        The stable idempotency key is preserved so a real tool adapter can
+        deduplicate an uncertain prior attempt.
+        """
+        return await self._mutate_checkpoint(
+            """
+            UPDATE task_step_checkpoints AS checkpoints
+            SET
+                attempt_count = checkpoints.attempt_count + 1,
+                started_at = now(),
+                completed_at = NULL,
+                retry_available_at = NULL,
+                output = NULL,
+                error = NULL,
+                updated_at = now()
+            WHERE checkpoints.checkpoint_id = :checkpoint_id
+              AND checkpoints.status = 'executing'
+              AND EXISTS (
+                    SELECT 1
+                    FROM task_execution_leases AS leases
+                    WHERE leases.task_id = checkpoints.task_id
+                      AND leases.lease_token = :lease_token
+                      AND leases.expires_at > now()
+              )
+            RETURNING
+                checkpoint_id,
+                task_id,
+                plan_id,
+                step_index,
+                operation,
+                arguments,
+                status,
+                attempt_count,
+                idempotency_key,
+                output,
+                error,
+                started_at,
+                completed_at,
+                retry_available_at,
+                created_at,
+                updated_at
+            """,
+            {
+                "checkpoint_id": checkpoint_id,
+                "lease_token": lease_token,
+            },
+        )
+
     async def complete_checkpoint(
         self,
         checkpoint_id: UUID,
