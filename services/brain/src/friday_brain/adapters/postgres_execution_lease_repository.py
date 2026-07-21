@@ -270,6 +270,19 @@ class PostgresExecutionLeaseRepository:
                         leases.task_id IS NULL
                         OR leases.expires_at <= now()
                       )
+                      AND (
+                        tasks.state <> 'executing'
+                        OR NOT EXISTS (
+                            SELECT 1
+                            FROM task_step_checkpoints
+                                AS checkpoints
+                            WHERE checkpoints.task_id = tasks.id
+                              AND checkpoints.status =
+                                  'retry_wait'
+                              AND checkpoints.retry_available_at
+                                  > now()
+                        )
+                      )
                     ORDER BY
                         tasks.updated_at,
                         tasks.id

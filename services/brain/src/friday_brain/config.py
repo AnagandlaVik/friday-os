@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     execution_max_attempts: int = 3
     execution_retry_delay_sec: float = 1.0
 
+    # Automatic durable recovery
+    recovery_enabled: bool = True
+    recovery_poll_interval_sec: float = 1.0
+    recovery_batch_size: int = 100
+    recovery_max_concurrency: int = 4
+
     # Adapter Configuration
     brain_adapter_task_repository: str = "in_memory"
     brain_adapter_state_store: str = "in_memory"

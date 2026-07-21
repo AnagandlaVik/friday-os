@@ -355,3 +355,116 @@ async def test_nonpositive_lease_duration_is_rejected(
             worker_id="worker",
             lease_duration_sec=0.0,
         )
+
+
+@pytest.mark.asyncio
+async def test_discovery_waits_for_checkpoint_retry_time(
+    task_repository: PostgresTaskRepository,
+    lease_repository: PostgresExecutionLeaseRepository,
+    postgres_engine: AsyncEngine,
+) -> None:
+    task = await create_task(
+        task_repository,
+        state=TaskState.EXECUTING,
+        input_text="Future retry task",
+    )
+    plan_id = uuid4()
+    checkpoint_id = uuid4()
+
+    async with postgres_engine.begin() as connection:
+        await connection.execute(
+            text(
+                """
+                INSERT INTO task_plans (
+                    plan_id,
+                    task_id,
+                    task_version,
+                    execution_attempt,
+                    schema_version,
+                    status,
+                    plan_data,
+                    validated_at
+                )
+                VALUES (
+                    :plan_id,
+                    :task_id,
+                    :task_version,
+                    1,
+                    1,
+                    'validated',
+                    CAST(:plan_data AS JSONB),
+                    now()
+                )
+                """
+            ),
+            {
+                "plan_id": plan_id,
+                "task_id": task.id,
+                "task_version": task.version,
+                "plan_data": (
+                    '{"id": "'
+                    + str(plan_id)
+                    + '", "task_id": "'
+                    + str(task.id)
+                    + '", "steps": []}'
+                ),
+            },
+        )
+
+        await connection.execute(
+            text(
+                """
+                INSERT INTO task_step_checkpoints (
+                    checkpoint_id,
+                    task_id,
+                    plan_id,
+                    step_index,
+                    operation,
+                    arguments,
+                    status,
+                    attempt_count,
+                    idempotency_key,
+                    retry_available_at
+                )
+                VALUES (
+                    :checkpoint_id,
+                    :task_id,
+                    :plan_id,
+                    0,
+                    'echo',
+                    CAST('{}' AS JSONB),
+                    'retry_wait',
+                    1,
+                    :idempotency_key,
+                    now() + INTERVAL '10 minutes'
+                )
+                """
+            ),
+            {
+                "checkpoint_id": checkpoint_id,
+                "task_id": task.id,
+                "plan_id": plan_id,
+                "idempotency_key": (f"recovery-test:{checkpoint_id}"),
+            },
+        )
+
+    before_due = await lease_repository.discover_recoverable(limit=10)
+
+    assert task.id not in before_due
+
+    async with postgres_engine.begin() as connection:
+        await connection.execute(
+            text(
+                """
+                UPDATE task_step_checkpoints
+                SET retry_available_at =
+                    now() - INTERVAL '1 second'
+                WHERE checkpoint_id = :checkpoint_id
+                """
+            ),
+            {"checkpoint_id": checkpoint_id},
+        )
+
+    after_due = await lease_repository.discover_recoverable(limit=10)
+
+    assert task.id in after_due
