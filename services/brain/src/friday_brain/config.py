@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     postgres_pool_timeout_sec: float = 5.0
     postgres_command_timeout_sec: float = 5.0
 
+    # Transactional outbox publisher
+    outbox_enabled: bool = True
+    outbox_batch_size: int = 50
+    outbox_poll_interval_sec: float = 0.25
+    outbox_lock_timeout_sec: float = 30.0
+    outbox_max_attempts: int = 5
+    outbox_retry_base_sec: float = 1.0
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )

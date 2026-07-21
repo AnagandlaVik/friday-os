@@ -11,13 +11,18 @@ from friday_brain.adapters.placeholder_planner import PlaceholderPlanner
 from friday_brain.adapters.placeholder_tool_executor import (
     PlaceholderToolExecutor,
 )
+from friday_brain.adapters.postgres_outbox_repository import (
+    PostgresOutboxRepository,
+)
 from friday_brain.adapters.postgres_task_repository import (
     PostgresTaskRepository,
 )
 from friday_brain.adapters.redis_state_store import RedisStateStore
+from friday_brain.application.outbox_publisher import OutboxPublisher
 from friday_brain.application.orchestrator import Orchestrator
 from friday_brain.config import Settings
 from friday_brain.protocols.event_bus import EventBus
+from friday_brain.protocols.outbox_repository import OutboxRepository
 from friday_brain.protocols.state_store import StateStore
 from friday_brain.protocols.task_repository import TaskRepository
 from friday_brain.security.tool_policy import ToolPolicy
@@ -42,6 +47,20 @@ class CompositionRoot:
             )
         else:
             self._task_repository = InMemoryTaskRepository()
+
+        self._outbox_repository: OutboxRepository | None = None
+
+        if (
+            self.settings.outbox_enabled
+            and self.settings.brain_adapter_task_repository == "postgres"
+        ):
+            self._outbox_repository = PostgresOutboxRepository(
+                postgres_url=self.settings.postgres_url,
+                pool_size=self.settings.postgres_pool_size,
+                max_overflow=self.settings.postgres_max_overflow,
+                pool_timeout=self.settings.postgres_pool_timeout_sec,
+                command_timeout=self.settings.postgres_command_timeout_sec,
+            )
 
         # Legacy/transient state store remains available during migration.
         if self.settings.brain_adapter_state_store == "redis":
@@ -73,6 +92,19 @@ class CompositionRoot:
         else:
             self._event_bus = InMemoryEventBus()
 
+        self._outbox_publisher: OutboxPublisher | None = None
+
+        if self._outbox_repository is not None:
+            self._outbox_publisher = OutboxPublisher(
+                repository=self._outbox_repository,
+                event_bus=self._event_bus,
+                batch_size=self.settings.outbox_batch_size,
+                poll_interval_sec=self.settings.outbox_poll_interval_sec,
+                lock_timeout_sec=self.settings.outbox_lock_timeout_sec,
+                max_attempts=self.settings.outbox_max_attempts,
+                retry_base_sec=self.settings.outbox_retry_base_sec,
+            )
+
         self._planner = PlaceholderPlanner()
         self._plan_validator = DeterministicPlanValidator(
             allowed_operations=self.settings.allowed_operations,
@@ -94,6 +126,16 @@ class CompositionRoot:
 
     def get_task_repository(self) -> TaskRepository:
         return self._task_repository
+
+    def get_outbox_repository(
+        self,
+    ) -> OutboxRepository | None:
+        return self._outbox_repository
+
+    def get_outbox_publisher(
+        self,
+    ) -> OutboxPublisher | None:
+        return self._outbox_publisher
 
     def get_state_store(self) -> StateStore:
         return self._state_store

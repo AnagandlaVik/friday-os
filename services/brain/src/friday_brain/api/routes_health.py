@@ -47,6 +47,14 @@ async def readiness_check(request: Request) -> HealthResponse | JSONResponse:
     if not await task_repository.is_healthy():
         unhealthy_components.append("task_repository")
 
+    outbox_repository = composition_root.get_outbox_repository()
+    if outbox_repository is not None and not await outbox_repository.is_healthy():
+        unhealthy_components.append("outbox_repository")
+
+    outbox_publisher = composition_root.get_outbox_publisher()
+    if outbox_publisher is not None and not await outbox_publisher.is_healthy():
+        unhealthy_components.append("outbox_publisher")
+
     state_store = composition_root.get_state_store()
     if not await state_store.is_healthy():
         all_healthy = False
