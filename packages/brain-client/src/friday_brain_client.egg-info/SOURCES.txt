@@ -1,0 +1,12 @@
+pyproject.toml
+src/friday_brain_client/__init__.py
+src/friday_brain_client/client.py
+src/friday_brain_client/errors.py
+src/friday_brain_client/models.py
+src/friday_brain_client/py.typed
+src/friday_brain_client.egg-info/PKG-INFO
+src/friday_brain_client.egg-info/SOURCES.txt
+src/friday_brain_client.egg-info/dependency_links.txt
+src/friday_brain_client.egg-info/requires.txt
+src/friday_brain_client.egg-info/top_level.txt
+tests/test_client.py

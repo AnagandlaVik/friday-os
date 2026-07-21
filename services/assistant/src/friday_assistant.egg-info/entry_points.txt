@@ -1,0 +1,2 @@
+[console_scripts]
+friday-assistant = friday_assistant.cli:main

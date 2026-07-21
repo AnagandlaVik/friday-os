@@ -1,0 +1,15 @@
+pyproject.toml
+src/friday_assistant/__init__.py
+src/friday_assistant/api.py
+src/friday_assistant/cli.py
+src/friday_assistant/config.py
+src/friday_assistant/main.py
+src/friday_assistant/models.py
+src/friday_assistant/service.py
+src/friday_assistant.egg-info/PKG-INFO
+src/friday_assistant.egg-info/SOURCES.txt
+src/friday_assistant.egg-info/dependency_links.txt
+src/friday_assistant.egg-info/entry_points.txt
+src/friday_assistant.egg-info/requires.txt
+src/friday_assistant.egg-info/top_level.txt
+tests/test_service.py
