@@ -1,0 +1,41 @@
+
+[project]
+name = "friday-brain"
+version = "0.1.0"
+description = "FRIDAY Brain Service"
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "pydantic-settings",
+    "structlog",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "pytest-repeat",
+]
+dev = [
+    "ruff",
+    "mypy",
+]
+
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "src",
+]
+asyncio_mode = "auto"
+testpaths = [
+    "tests",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.mypy]
+packages = ["friday_brain"]
+strict = true
