@@ -17,12 +17,16 @@ class InMemoryStateStore:
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
-        """Initialize connection pools or local state caches."""
+        """No-op for in-memory state store."""
         pass
 
     async def stop(self) -> None:
-        """Gracefully release connection pools and file handles."""
+        """No-op for in-memory state store."""
         pass
+
+    async def is_healthy(self) -> bool:
+        """In-memory state store is always healthy."""
+        return True
 
     def reset(self) -> None:
         """Clears the store for testing purposes."""

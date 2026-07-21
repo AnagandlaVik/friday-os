@@ -72,12 +72,19 @@ Event subscribers (like loggers) may observe this flow, but they do not particip
 *   **Proof:** The service starts and passes all tests. A request flows through the synchronous orchestration path, produces the correct state and events, and returns a final status.
 
 ### Milestone 2 — Infrastructure Adapters
-*   **Goal:** Integrate external infrastructure by swapping out adapters.
+*   **Goal:** Integrate external infrastructure by swapping out adapters and setting up a local Docker Compose environment.
 *   **Tasks:**
-    1.  Create a `docker-compose.yml` for Redis and NATS.
-    2.  Implement `RedisStateStore` and `NatsJetStreamEventBus` adapters.
-    3.  Add integration tests for the new adapters, including tests for redelivery and duplicate-event handling.
-*   **Proof:** The application runs with the new adapters by changing only the composition root.
+    1.  Extend `StateStore` and `EventBus` protocols with async `start()`, `stop()`, and `is_healthy()` lifecycle methods.
+    2.  Update current `InMemoryStateStore` and `InMemoryEventBus` to comply with the updated signature.
+    3.  Implement `RedisStateStore` and `JetStreamEventBus` adapters.
+    4.  Create `compose.yaml` for Redis, NATS JetStream, and the Brain service.
+    5.  Create `Dockerfile` for the Brain service.
+    6.  Update `Settings` and `CompositionRoot` to instantiate the correct adapters based on environment variables.
+    7.  Wire adapter `start()` and `stop()` calls to FastAPI’s lifespan handler in `main.py`.
+    8.  Implement the `/ready` API endpoint, which checks adapter health.
+    9.  Add integration tests for the new adapters, including tests for redelivery and duplicate-event handling.
+    10. Update developer documentation (`services/brain/README.md`) with instructions for using Docker Compose.
+*   **Proof:** The application runs with the new adapters by changing only the composition root. The Docker Compose setup provides a consistent local development environment, and all tests pass with external services running.
 
 *(Milestones 3 and 4 remain unchanged)*
 

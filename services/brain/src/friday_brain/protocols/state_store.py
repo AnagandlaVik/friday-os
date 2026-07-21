@@ -21,6 +21,12 @@ class StateStore(Protocol):
         """
         ...
 
+    async def is_healthy(self) -> bool:
+        """
+        Check if the state store is connected and operational.
+        """
+        ...
+
     async def save(self, task: Task) -> None:
         """
         Saves the complete task state.

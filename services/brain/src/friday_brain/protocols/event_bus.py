@@ -22,6 +22,12 @@ class EventBus(Protocol):
         """
         ...
 
+    async def is_healthy(self) -> bool:
+        """
+        Check if the event bus is connected and operational.
+        """
+        ...
+
     def subscribe(self, subscriber: "Subscriber") -> None:
         """
         Registers a subscriber to handle events.

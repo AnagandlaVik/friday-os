@@ -2,8 +2,8 @@ from pydantic import BaseModel, TypeAdapter
 from collections.abc import Mapping
 import asyncio
 import json
-import logging
 from typing import Any, List
+from structlog.stdlib import get_logger
 
 import nats
 from nats.aio.client import Client as NATSClient
@@ -38,7 +38,7 @@ from friday_brain.contracts.events import (
 )
 from friday_brain.protocols.event_bus import Subscriber
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 EVENT_TYPE_TO_PAYLOAD_MODEL: Mapping[str, type[BaseModel]] = {
@@ -134,6 +134,8 @@ class JetStreamEventBus:
         max_deliver: int = 3,
         ack_wait: float = 30.0,
         fetch_timeout: float = 1.0,
+        max_ack_pending: int = 2048,
+        drain_timeout: float = 5.0,
     ) -> None:
         self._nats_url = nats_url
         self._connect_timeout = connect_timeout
@@ -145,6 +147,8 @@ class JetStreamEventBus:
         self._max_deliver = max_deliver
         self._ack_wait = ack_wait
         self._fetch_timeout = fetch_timeout
+        self._max_ack_pending = max_ack_pending
+        self._drain_timeout = drain_timeout
 
         self._nc: NATSClient | None = None
         self._js: JetStreamContext | None = None
@@ -153,6 +157,46 @@ class JetStreamEventBus:
         self._running = False
         self._pull_task: asyncio.Task[None] | None = None
         self._advisory_task: asyncio.Task[None] | None = None
+
+    async def is_healthy(self) -> bool:
+        """
+        Check if the event bus is connected and operational.
+        """
+        if self._nc is None or self._js is None:
+            return False
+
+        if not self._nc.is_connected or self._nc.is_closed or self._nc.is_reconnecting:
+            return False
+
+        probe_timeout = min(self._connect_timeout, 2.0)
+
+        try:
+            # Flush sends a PING and waits for a PONG, providing a live
+            # connection probe rather than relying on cached client state.
+            await asyncio.wait_for(
+                self._nc.flush(),
+                timeout=probe_timeout,
+            )
+
+            await asyncio.wait_for(
+                self._js.account_info(),
+                timeout=probe_timeout,
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except (
+            TimeoutError,
+            NatsTimeoutError,
+            ConnectionClosedError,
+            NoServersError,
+            APIError,
+        ) as e:
+            logger.warning("NATS JetStream health check failed: %s", e)
+            return False
+        except Exception as e:
+            logger.error("Unexpected error during NATS JetStream health check: %s", e)
+            return False
 
     async def start(self) -> None:
         """
@@ -227,7 +271,10 @@ class JetStreamEventBus:
 
         if self._nc:
             try:
-                await self._nc.drain()
+                await asyncio.wait_for(
+                    self._nc.drain(),
+                    timeout=self._drain_timeout,
+                )
             except Exception:
                 pass
             finally:
@@ -334,6 +381,7 @@ class JetStreamEventBus:
             ack_policy=AckPolicy.EXPLICIT,
             ack_wait=self._ack_wait,  # seconds
             max_deliver=self._max_deliver,
+            max_ack_pending=self._max_ack_pending,
         )
         try:
             await self._js.add_consumer(self._stream_name, config=consumer_config)
@@ -359,11 +407,12 @@ class JetStreamEventBus:
                 )
                 for msg in msgs:
                     await self._process_message(msg)
-            except FetchTimeoutError:
-                # No messages available, continue loop
-                await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 raise
+            except (FetchTimeoutError, NatsTimeoutError, TimeoutError):
+                # No messages are available during this pull interval.
+                await asyncio.sleep(0.1)
+                continue
             except Exception as e:
                 if not self._running:
                     break

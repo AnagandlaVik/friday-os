@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from typing import Dict
@@ -258,3 +259,23 @@ class RedisStateStore:
             return await self.get(uuid.UUID(task_id_normal))
         except Exception as e:
             raise _handle_redis_exception(e)
+
+    async def is_healthy(self) -> bool:
+        """
+        Check if the state store is connected and operational.
+        """
+        if self._client is None:
+            return False
+        try:
+            await self._client.ping()
+            return True
+        except asyncio.CancelledError:
+            raise
+        except (
+            redis_exc.TimeoutError,
+            redis_exc.ConnectionError,
+            redis_exc.RedisError,
+        ):
+            return False
+        except Exception:
+            return False
