@@ -39,3 +39,107 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     service: str = "friday-brain"
+
+
+from datetime import datetime
+from uuid import UUID
+
+from friday_brain.contracts.authorization import (
+    AuthorizationEventType,
+)
+from friday_brain.contracts.tools import ToolPermission
+
+
+class GrantTaskPermissionRequest(BaseModel):
+    """Grant one capability to a specific task."""
+
+    permission: ToolPermission
+    expires_in_sec: int | None = Field(
+        default=None,
+        ge=1,
+        le=86400,
+        description=(
+            "Optional grant lifetime. Omit for a grant "
+            "that remains active until revoked."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GrantToolConfirmationRequest(BaseModel):
+    """Grant one exact-call confirmation."""
+
+    expires_in_sec: int = Field(
+        default=300,
+        ge=1,
+        le=3600,
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TaskPermissionGrantResponse(BaseModel):
+    grant_id: UUID
+    task_id: UUID
+    permission: ToolPermission
+    granted_by: str
+    granted_at: datetime
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    revoke_reason: str | None
+    updated_at: datetime
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        use_enum_values=True,
+    )
+
+
+class ToolConfirmationGrantResponse(BaseModel):
+    grant_id: UUID
+    task_id: UUID
+    checkpoint_id: UUID
+    tool_name: str
+    arguments_digest: str
+    granted_by: str
+    granted_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None
+    revoked_at: datetime | None
+    revoke_reason: str | None
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AuthorizationEventResponse(BaseModel):
+    event_id: UUID
+    task_id: UUID
+    checkpoint_id: UUID | None
+    event_type: AuthorizationEventType
+    permission: ToolPermission | None
+    tool_name: str | None
+    arguments_digest: str | None
+    actor_id: str | None
+    reason: str | None
+    details: dict[str, object]
+    created_at: datetime
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        use_enum_values=True,
+    )
+
+
+class AuthorizationEventListResponse(BaseModel):
+    events: list[AuthorizationEventResponse]
+
+
+from datetime import datetime
+from uuid import UUID
+
+from friday_brain.contracts.authorization import (
+    AuthorizationEventType,
+)
+from friday_brain.contracts.tools import ToolPermission

@@ -83,6 +83,11 @@ class ExecutionPlanRepository(Protocol):
         plan_id: UUID,
     ) -> list[StepCheckpoint]: ...
 
+    async def get_checkpoint(
+        self,
+        checkpoint_id: UUID,
+    ) -> StepCheckpoint | None: ...
+
     async def start_checkpoint(
         self,
         checkpoint_id: UUID,

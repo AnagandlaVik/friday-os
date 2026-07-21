@@ -27,6 +27,7 @@ class FakeCompositionRoot:
         execution_lease_repository: bool = True,
         execution_plan_repository: bool = True,
         tool_invocation_repository: bool = True,
+        authorization_repository: bool = True,
         outbox_repository: bool = True,
         outbox_publisher: bool = True,
         recovery_worker: bool = True,
@@ -37,6 +38,7 @@ class FakeCompositionRoot:
         self.execution_lease_repository = HealthComponent(execution_lease_repository)
         self.execution_plan_repository = HealthComponent(execution_plan_repository)
         self.tool_invocation_repository = HealthComponent(tool_invocation_repository)
+        self.authorization_repository = HealthComponent(authorization_repository)
         self.outbox_repository = HealthComponent(outbox_repository)
         self.outbox_publisher = HealthComponent(outbox_publisher)
         self.recovery_worker = HealthComponent(recovery_worker)
@@ -55,6 +57,11 @@ class FakeCompositionRoot:
         self,
     ) -> HealthComponent:
         return self.execution_plan_repository
+
+    def get_authorization_repository(
+        self,
+    ) -> HealthComponent:
+        return self.authorization_repository
 
     def get_tool_invocation_repository(
         self,
@@ -167,3 +174,21 @@ async def test_readiness_reports_unhealthy_tool_invocation_repository() -> None:
     payload = json.loads(response.body)
 
     assert "tool_invocation_repository" in payload["details"]["unhealthy_components"]
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_unhealthy_authorization_repository() -> None:
+    response = await readiness_check(
+        make_request(
+            FakeCompositionRoot(
+                authorization_repository=False,
+            )
+        )
+    )
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 503
+
+    payload = json.loads(response.body)
+
+    assert "authorization_repository" in payload["details"]["unhealthy_components"]
