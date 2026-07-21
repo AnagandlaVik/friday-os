@@ -53,9 +53,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await outbox_publisher.start()
         logger.info("Outbox publisher started.")
 
+    recovery_worker = composition_root.get_recovery_worker()
+    if recovery_worker is not None:
+        await recovery_worker.start()
+        logger.info("Recovery worker started.")
+
     yield
 
     logger.info("Application shutting down...")
+    # Stop background application workers before infrastructure.
+    recovery_worker = composition_root.get_recovery_worker()
+    if recovery_worker is not None:
+        await recovery_worker.stop()
+        logger.info("Recovery worker stopped.")
+
     # Stop infrastructure adapters
     outbox_publisher = composition_root.get_outbox_publisher()
     if outbox_publisher is not None:

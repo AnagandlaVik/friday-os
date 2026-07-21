@@ -40,6 +40,7 @@ from friday_brain.adapters.postgres_task_repository import (
 from friday_brain.adapters.redis_state_store import RedisStateStore
 from friday_brain.application.outbox_publisher import OutboxPublisher
 from friday_brain.application.orchestrator import Orchestrator
+from friday_brain.application.recovery_worker import RecoveryWorker
 from friday_brain.config import Settings
 from friday_brain.protocols.event_bus import EventBus
 from friday_brain.protocols.outbox_repository import OutboxRepository
@@ -178,6 +179,21 @@ class CompositionRoot:
                 heartbeat_interval_sec=(self.settings.execution_heartbeat_interval_sec),
             )
 
+        self._recovery_worker: RecoveryWorker | None = None
+
+        if (
+            self.settings.recovery_enabled
+            and self._execution_lease_repository is not None
+            and self._durable_processor is not None
+        ):
+            self._recovery_worker = RecoveryWorker(
+                lease_repository=(self._execution_lease_repository),
+                processor=self._durable_processor,
+                poll_interval_sec=(self.settings.recovery_poll_interval_sec),
+                batch_size=self.settings.recovery_batch_size,
+                max_concurrency=(self.settings.recovery_max_concurrency),
+            )
+
         self._orchestrator = Orchestrator(
             task_repository=self.get_task_repository(),
             planner=self.get_planner(),
@@ -216,6 +232,11 @@ class CompositionRoot:
         self,
     ) -> DurableTaskProcessor | None:
         return self._durable_processor
+
+    def get_recovery_worker(
+        self,
+    ) -> RecoveryWorker | None:
+        return self._recovery_worker
 
     def get_state_store(self) -> StateStore:
         return self._state_store
