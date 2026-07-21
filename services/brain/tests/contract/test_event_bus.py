@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 import pytest
 
@@ -41,24 +42,28 @@ class EventBusContract:
             payload=TaskCreatedPayload(input="test", state="pending"),
         )
 
-        subscriber1_called = False
-        subscriber2_called = False
+        subscriber1_called = asyncio.Event()
+        subscriber2_called = asyncio.Event()
 
         async def subscriber1(e: Event):
-            nonlocal subscriber1_called
-            subscriber1_called = True
+            subscriber1_called.set()
 
         async def subscriber2(e: Event):
-            nonlocal subscriber2_called
-            subscriber2_called = True
+            subscriber2_called.set()
 
         event_bus.subscribe(subscriber1)
         event_bus.subscribe(subscriber2)
 
         await event_bus.publish(event)
 
-        assert subscriber1_called
-        assert subscriber2_called
+        # Wait for both events with a bounded timeout
+        await asyncio.wait_for(
+            asyncio.gather(subscriber1_called.wait(), subscriber2_called.wait()),
+            timeout=5.0,
+        )
+
+        assert subscriber1_called.is_set()
+        assert subscriber2_called.is_set()
 
     @pytest.mark.asyncio
     async def test_subscriber_failure(self, event_bus: EventBus):
