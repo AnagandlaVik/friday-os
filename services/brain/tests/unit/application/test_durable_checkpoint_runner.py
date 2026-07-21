@@ -219,6 +219,7 @@ class RecordingStepExecutor:
         self,
         step: PlanStep,
         task: Task,
+        checkpoint_id: UUID,
         idempotency_key: str,
     ) -> Any:
         del task
@@ -450,3 +451,59 @@ async def test_runner_cancels_before_next_step() -> None:
     assert result.status == "cancelled"
     assert repository.cancelled_count == 2
     assert executor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_nonretryable_tool_failure_fails_immediately() -> None:
+    from friday_brain.application.secure_tool_runtime import (
+        ToolExecutionFailedError,
+    )
+    from friday_brain.contracts.tools import ToolExecutionError
+
+    task, persisted, lease, checkpoints = build_execution(["pending", "pending"])
+    repository = FakePlanRepository(checkpoints)
+
+    class NonretryableExecutor:
+        async def execute_step(
+            self,
+            step: PlanStep,
+            task: Task,
+            checkpoint_id: UUID,
+            idempotency_key: str,
+        ) -> Any:
+            del step
+            del task
+            del checkpoint_id
+            del idempotency_key
+
+            raise ToolExecutionFailedError(
+                error=ToolExecutionError(
+                    code="permission_denied",
+                    message="Permission denied.",
+                    retryable=False,
+                ),
+                max_attempts=5,
+                base_delay_sec=1.0,
+                max_delay_sec=10.0,
+            )
+
+    runner = DurableCheckpointRunner(
+        repository,
+        NonretryableExecutor(),
+        max_attempts=5,
+    )
+
+    with pytest.raises(
+        DurableCheckpointError,
+        match="Permission denied",
+    ):
+        await runner.run(
+            task=task,
+            persisted_plan=persisted,
+            lease=lease,
+        )
+
+    assert repository.checkpoints[0].status == "failed"
+    assert repository.checkpoints[0].attempt_count == 1
+    assert repository.checkpoints[0].error is not None
+    assert repository.checkpoints[0].error["retryable"] is False

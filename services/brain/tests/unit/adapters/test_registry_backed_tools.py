@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 
 from friday_brain.adapters.builtin_tools import (
@@ -115,6 +117,7 @@ async def test_executor_uses_registered_schemas() -> None:
     result = await executor.execute_step(
         step=step,
         task=task,
+        checkpoint_id=uuid4(),
         idempotency_key="registry-test",
     )
 

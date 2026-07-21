@@ -1,4 +1,5 @@
 from typing import Any, Protocol
+from uuid import UUID
 
 from friday_brain.contracts.plans import PlanStep
 from friday_brain.contracts.tasks import Task
@@ -11,7 +12,8 @@ class StepExecutor(Protocol):
         self,
         step: PlanStep,
         task: Task,
+        checkpoint_id: UUID,
         idempotency_key: str,
     ) -> Any:
-        """Execute one step using a stable idempotency key."""
+        """Execute one durable step inside its tool boundary."""
         ...
