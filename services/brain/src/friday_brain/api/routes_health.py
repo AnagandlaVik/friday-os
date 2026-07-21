@@ -72,6 +72,13 @@ async def readiness_check(
     ):
         unhealthy_components.append("tool_invocation_repository")
 
+    authorization_repository = composition_root.get_authorization_repository()
+    if (
+        authorization_repository is not None
+        and not await authorization_repository.is_healthy()
+    ):
+        unhealthy_components.append("authorization_repository")
+
     outbox_repository = composition_root.get_outbox_repository()
     if outbox_repository is not None and not await outbox_repository.is_healthy():
         unhealthy_components.append("outbox_repository")

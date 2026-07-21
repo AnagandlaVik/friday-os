@@ -315,6 +315,43 @@ class PostgresExecutionPlanRepository:
 
         return [self._row_to_checkpoint(row) for row in rows]
 
+    async def get_checkpoint(
+        self,
+        checkpoint_id: UUID,
+    ) -> StepCheckpoint | None:
+        engine = self._require_engine()
+
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT
+                        checkpoint_id,
+                        task_id,
+                        plan_id,
+                        step_index,
+                        operation,
+                        arguments,
+                        status,
+                        attempt_count,
+                        idempotency_key,
+                        output,
+                        error,
+                        started_at,
+                        completed_at,
+                        retry_available_at,
+                        created_at,
+                        updated_at
+                    FROM task_step_checkpoints
+                    WHERE checkpoint_id = :checkpoint_id
+                    """
+                ),
+                {"checkpoint_id": checkpoint_id},
+            )
+            row = result.mappings().one_or_none()
+
+        return self._row_to_checkpoint(row) if row is not None else None
+
     async def start_checkpoint(
         self,
         checkpoint_id: UUID,

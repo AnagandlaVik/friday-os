@@ -1,14 +1,13 @@
 import asyncio
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
 
 from friday_brain.application.tool_registry import (
-    ToolConfirmationRequiredError,
     ToolNotRegisteredError,
-    ToolPermissionDeniedError,
     ToolRegistry,
 )
 from friday_brain.contracts.tools import (
@@ -17,6 +16,9 @@ from friday_brain.contracts.tools import (
     ToolExecutionResult,
     ToolInvocation,
     ToolPermission,
+)
+from friday_brain.protocols.authorization_repository import (
+    AuthorizationRepository,
 )
 from friday_brain.protocols.tool_handler import (
     ToolExecutionContext,
@@ -27,6 +29,9 @@ from friday_brain.protocols.tool_invocation_repository import (
     ToolInvocationLeaseLostError,
     ToolInvocationRecord,
     ToolInvocationRepository,
+)
+from friday_brain.security.authorization import (
+    digest_tool_arguments,
 )
 
 
@@ -69,7 +74,7 @@ class ToolHandlerError(RuntimeError):
 
 
 class ToolExecutionFailedError(RuntimeError):
-    """Failure returned by the secure runtime to durable execution."""
+    """Failure returned by the runtime to durable execution."""
 
     def __init__(
         self,
@@ -92,10 +97,11 @@ class ToolExecutionFailedError(RuntimeError):
 
 class SecureToolRuntime:
     """
-    Validate and execute registered tools inside a durable security boundary.
+    Validate, authorize, deduplicate, and execute registered tools.
 
-    When an invocation repository is configured, successful and terminal
-    failed results are cached by idempotency key across retries and restarts.
+    Durable confirmation is consumed once for an exact task, checkpoint,
+    tool, and argument digest. Later retries of that exact call may reuse
+    the consumed confirmation, but changed arguments cannot.
     """
 
     def __init__(
@@ -104,6 +110,7 @@ class SecureToolRuntime:
         registry: ToolRegistry,
         handlers: Mapping[str, ToolHandler] | None = None,
         invocation_repository: (ToolInvocationRepository | None) = None,
+        authorization_repository: (AuthorizationRepository | None) = None,
         worker_id: str | None = None,
         reservation_duration_sec: float = 30.0,
         heartbeat_interval_sec: float = 10.0,
@@ -128,6 +135,7 @@ class SecureToolRuntime:
         self._registry = registry
         self._handlers: dict[str, ToolHandler] = {}
         self._invocation_repository = invocation_repository
+        self._authorization_repository = authorization_repository
         self._worker_id = worker_id
         self._reservation_duration_sec = reservation_duration_sec
         self._heartbeat_interval_sec = heartbeat_interval_sec
@@ -160,32 +168,11 @@ class SecureToolRuntime:
         lease_token: UUID | None = None,
     ) -> ToolExecutionResult:
         try:
-            definition = self._registry.validate_access(
-                invocation.tool_name,
-                granted_permissions=granted_permissions,
-                confirmation_granted=confirmation_granted,
-            )
+            definition = self._registry.get(invocation.tool_name)
         except ToolNotRegisteredError:
             return ToolExecutionResult.failed(
                 code="tool_not_registered",
                 message=(f"Tool '{invocation.tool_name}' is not registered."),
-                retryable=False,
-            )
-        except ToolPermissionDeniedError as error:
-            return ToolExecutionResult.failed(
-                code="tool_permission_denied",
-                message=str(error),
-                retryable=False,
-                details={
-                    "missing_permissions": sorted(
-                        permission.value for permission in error.missing_permissions
-                    )
-                },
-            )
-        except ToolConfirmationRequiredError as error:
-            return ToolExecutionResult.failed(
-                code="tool_confirmation_required",
-                message=str(error),
                 retryable=False,
             )
 
@@ -211,12 +198,27 @@ class SecureToolRuntime:
                 retryable=False,
             )
 
+        authorization = await self._authorize(
+            definition=definition,
+            invocation=invocation,
+            fallback_permissions=granted_permissions,
+            fallback_confirmation=confirmation_granted,
+        )
+
+        if isinstance(
+            authorization,
+            ToolExecutionResult,
+        ):
+            return authorization
+
+        effective_permissions, effective_confirmation = authorization
+
         context = ToolExecutionContext(
             task_id=invocation.task_id,
             checkpoint_id=invocation.checkpoint_id,
-            idempotency_key=(invocation.idempotency_key),
-            granted_permissions=granted_permissions,
-            confirmation_granted=confirmation_granted,
+            idempotency_key=invocation.idempotency_key,
+            granted_permissions=effective_permissions,
+            confirmation_granted=effective_confirmation,
         )
 
         if self._invocation_repository is None:
@@ -338,6 +340,144 @@ class SecureToolRuntime:
 
         return result
 
+    async def _authorize(
+        self,
+        *,
+        definition: ToolDefinition,
+        invocation: ToolInvocation,
+        fallback_permissions: frozenset[ToolPermission],
+        fallback_confirmation: bool,
+    ) -> tuple[frozenset[ToolPermission], bool] | ToolExecutionResult:
+        repository = self._authorization_repository
+
+        if repository is None:
+            permissions = fallback_permissions
+            confirmation = fallback_confirmation
+        else:
+            try:
+                permissions = await repository.get_active_permissions(
+                    task_id=invocation.task_id,
+                    at=datetime.now(UTC),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                return self._authorization_unavailable(error)
+
+            confirmation = False
+
+        missing_permissions = definition.permissions - permissions
+
+        if missing_permissions:
+            if repository is not None:
+                try:
+                    for permission in sorted(
+                        missing_permissions,
+                        key=lambda item: item.value,
+                    ):
+                        await repository.record_event(
+                            task_id=invocation.task_id,
+                            checkpoint_id=(invocation.checkpoint_id),
+                            event_type="permission_denied",
+                            permission=permission,
+                            tool_name=definition.name,
+                            arguments_digest=(
+                                digest_tool_arguments(invocation.arguments)
+                            ),
+                            reason=("Required permission is not currently granted."),
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    return self._authorization_unavailable(error)
+
+            return ToolExecutionResult.failed(
+                code="tool_permission_denied",
+                message=(
+                    f"Tool '{definition.name}' is missing "
+                    "one or more required permissions."
+                ),
+                retryable=False,
+                details={
+                    "missing_permissions": sorted(
+                        permission.value for permission in missing_permissions
+                    )
+                },
+            )
+
+        if not definition.requires_confirmation:
+            return permissions, False
+
+        if repository is None:
+            if confirmation:
+                return permissions, True
+
+            return ToolExecutionResult.failed(
+                code="tool_confirmation_required",
+                message=(f"Tool '{definition.name}' requires explicit confirmation."),
+                retryable=False,
+            )
+
+        arguments_digest = digest_tool_arguments(invocation.arguments)
+
+        try:
+            confirmation = await repository.has_consumed_confirmation(
+                task_id=invocation.task_id,
+                checkpoint_id=(invocation.checkpoint_id),
+                tool_name=definition.name,
+                arguments_digest=arguments_digest,
+            )
+
+            if not confirmation:
+                consumed = await repository.consume_confirmation(
+                    task_id=invocation.task_id,
+                    checkpoint_id=(invocation.checkpoint_id),
+                    tool_name=definition.name,
+                    arguments_digest=(arguments_digest),
+                    at=datetime.now(UTC),
+                )
+                confirmation = consumed is not None
+
+            if not confirmation:
+                await repository.record_event(
+                    task_id=invocation.task_id,
+                    checkpoint_id=invocation.checkpoint_id,
+                    event_type="confirmation_denied",
+                    tool_name=definition.name,
+                    arguments_digest=arguments_digest,
+                    reason=("No active exact-call confirmation grant was found."),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return self._authorization_unavailable(error)
+
+        if not confirmation:
+            return ToolExecutionResult.failed(
+                code="tool_confirmation_required",
+                message=(
+                    f"Tool '{definition.name}' requires "
+                    "confirmation for these exact arguments."
+                ),
+                retryable=False,
+                details={"arguments_digest": arguments_digest},
+            )
+
+        return permissions, True
+
+    @staticmethod
+    def _authorization_unavailable(
+        error: Exception,
+    ) -> ToolExecutionResult:
+        return ToolExecutionResult.failed(
+            code="authorization_unavailable",
+            message=(
+                "Authorization state could not be verified. Tool execution was denied."
+            ),
+            retryable=True,
+            details={"exception_type": type(error).__name__},
+        )
+
     async def _execute_with_heartbeat(
         self,
         *,
@@ -374,7 +514,6 @@ class SecureToolRuntime:
                 heartbeat,
                 return_exceptions=True,
             )
-
             return await execution
 
         execution.cancel()
@@ -382,7 +521,6 @@ class SecureToolRuntime:
             execution,
             return_exceptions=True,
         )
-
         await heartbeat
 
         raise ToolInvocationLeaseLostError("Tool invocation ownership was lost.")

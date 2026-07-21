@@ -37,6 +37,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if execution_plan_repository is not None:
         await execution_plan_repository.start()
         logger.info("Execution plan repository started.")
+
+    authorization_repository = composition_root.get_authorization_repository()
+    if authorization_repository is not None:
+        await authorization_repository.start()
+        logger.info("Authorization repository started.")
     await composition_root.get_state_store().start()
     logger.info("State store started.")
 
@@ -85,6 +90,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if execution_plan_repository is not None:
         await execution_plan_repository.stop()
         logger.info("Execution plan repository stopped.")
+
+    authorization_repository = composition_root.get_authorization_repository()
+    if authorization_repository is not None:
+        await authorization_repository.stop()
+        logger.info("Authorization repository stopped.")
 
     execution_lease_repository = composition_root.get_execution_lease_repository()
     if execution_lease_repository is not None:

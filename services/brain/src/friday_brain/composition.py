@@ -40,6 +40,9 @@ from friday_brain.adapters.postgres_execution_plan_repository import (
 from friday_brain.adapters.postgres_outbox_repository import (
     PostgresOutboxRepository,
 )
+from friday_brain.adapters.postgres_authorization_repository import (
+    PostgresAuthorizationRepository,
+)
 from friday_brain.adapters.postgres_task_repository import (
     PostgresTaskRepository,
 )
@@ -55,6 +58,9 @@ from friday_brain.application.secure_tool_runtime import (
 )
 from friday_brain.application.tool_registry import ToolRegistry
 from friday_brain.config import Settings
+from friday_brain.protocols.authorization_repository import (
+    AuthorizationRepository,
+)
 from friday_brain.protocols.event_bus import EventBus
 from friday_brain.protocols.outbox_repository import OutboxRepository
 from friday_brain.protocols.state_store import StateStore
@@ -110,6 +116,17 @@ class CompositionRoot:
 
         if self.settings.brain_adapter_task_repository == "postgres":
             self._tool_invocation_repository = PostgresToolInvocationRepository(
+                postgres_url=self.settings.postgres_url,
+                pool_size=self.settings.postgres_pool_size,
+                max_overflow=self.settings.postgres_max_overflow,
+                pool_timeout=(self.settings.postgres_pool_timeout_sec),
+                command_timeout=(self.settings.postgres_command_timeout_sec),
+            )
+
+        self._authorization_repository: AuthorizationRepository | None = None
+
+        if self.settings.brain_adapter_task_repository == "postgres":
+            self._authorization_repository = PostgresAuthorizationRepository(
                 postgres_url=self.settings.postgres_url,
                 pool_size=self.settings.postgres_pool_size,
                 max_overflow=self.settings.postgres_max_overflow,
@@ -184,6 +201,7 @@ class CompositionRoot:
             registry=self._tool_registry,
             handlers=create_builtin_tool_handlers(),
             invocation_repository=(self._tool_invocation_repository),
+            authorization_repository=(self._authorization_repository),
             worker_id=self._worker_id,
             reservation_duration_sec=(
                 self.settings.tool_invocation_reservation_duration_sec
@@ -254,6 +272,11 @@ class CompositionRoot:
 
     def get_task_repository(self) -> TaskRepository:
         return self._task_repository
+
+    def get_authorization_repository(
+        self,
+    ) -> AuthorizationRepository | None:
+        return self._authorization_repository
 
     def get_tool_invocation_repository(
         self,
