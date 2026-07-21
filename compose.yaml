@@ -22,10 +22,13 @@ services:
       NATS_CONNECT_TIMEOUT_SEC: "10.0"
       # Other settings can be passed from the host .env file if present,
       # but are configured with sane defaults in friday_brain/config.py
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER:-friday}:${POSTGRES_PASSWORD:-friday}@postgres:5432/${POSTGRES_DB:-friday}
     depends_on:
       redis:
         condition: service_healthy
       nats:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test:
@@ -79,6 +82,26 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-friday}
+      POSTGRES_USER: ${POSTGRES_USER:-friday}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-friday}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
 volumes:
+  postgres_data:
   redis_data:
   nats_data:
