@@ -3,14 +3,23 @@ from friday_brain.adapters.deterministic_plan_validator import (
 )
 from friday_brain.adapters.in_memory_event_bus import InMemoryEventBus
 from friday_brain.adapters.in_memory_state_store import InMemoryStateStore
+from friday_brain.adapters.in_memory_task_repository import (
+    InMemoryTaskRepository,
+)
 from friday_brain.adapters.jetstream_event_bus import JetStreamEventBus
 from friday_brain.adapters.placeholder_planner import PlaceholderPlanner
-from friday_brain.adapters.placeholder_tool_executor import PlaceholderToolExecutor
+from friday_brain.adapters.placeholder_tool_executor import (
+    PlaceholderToolExecutor,
+)
+from friday_brain.adapters.postgres_task_repository import (
+    PostgresTaskRepository,
+)
 from friday_brain.adapters.redis_state_store import RedisStateStore
 from friday_brain.application.orchestrator import Orchestrator
 from friday_brain.config import Settings
 from friday_brain.protocols.event_bus import EventBus
 from friday_brain.protocols.state_store import StateStore
+from friday_brain.protocols.task_repository import TaskRepository
 from friday_brain.security.tool_policy import ToolPolicy
 
 
@@ -21,23 +30,37 @@ class CompositionRoot:
             allowed_operations=self.settings.allowed_operations
         )
 
-        # State Store Adapter Selection
+        # Authoritative task repository.
+        if self.settings.brain_adapter_task_repository == "postgres":
+            self._task_repository: TaskRepository = PostgresTaskRepository(
+                postgres_url=self.settings.postgres_url,
+                pool_size=self.settings.postgres_pool_size,
+                max_overflow=self.settings.postgres_max_overflow,
+                pool_timeout=self.settings.postgres_pool_timeout_sec,
+                command_timeout=self.settings.postgres_command_timeout_sec,
+                subject_prefix=self.settings.nats_subject_prefix,
+            )
+        else:
+            self._task_repository = InMemoryTaskRepository()
+
+        # Legacy/transient state store remains available during migration.
         if self.settings.brain_adapter_state_store == "redis":
             self._state_store: StateStore = RedisStateStore(
                 redis_url=self.settings.redis_url,
                 connect_timeout=self.settings.redis_connect_timeout_sec,
                 command_timeout=self.settings.redis_command_timeout_sec,
             )
-        else:  # Default to in_memory
+        else:
             self._state_store = InMemoryStateStore()
 
-        # Event Bus Adapter Selection
+        # External event transport. Transactional publication will later
+        # be performed by the outbox publisher.
         if self.settings.brain_adapter_event_bus == "nats":
             self._event_bus: EventBus = JetStreamEventBus(
                 nats_url=self.settings.nats_url,
                 connect_timeout=self.settings.nats_connect_timeout_sec,
                 publish_timeout=self.settings.nats_publish_timeout_sec,
-                max_reconnect_attempts=self.settings.nats_max_reconnect_attempts,
+                max_reconnect_attempts=(self.settings.nats_max_reconnect_attempts),
                 stream_name=self.settings.nats_stream_name,
                 subject_prefix=self.settings.nats_subject_prefix,
                 consumer_name=self.settings.nats_consumer_name,
@@ -47,7 +70,7 @@ class CompositionRoot:
                 max_ack_pending=self.settings.nats_max_ack_pending,
                 drain_timeout=self.settings.nats_drain_timeout_sec,
             )
-        else:  # Default to in_memory
+        else:
             self._event_bus = InMemoryEventBus()
 
         self._planner = PlaceholderPlanner()
@@ -58,9 +81,9 @@ class CompositionRoot:
         self._tool_executor = PlaceholderToolExecutor(
             tool_policy=self.get_tool_policy()
         )
+
         self._orchestrator = Orchestrator(
-            state_store=self.get_state_store(),
-            event_bus=self.get_event_bus(),
+            task_repository=self.get_task_repository(),
             planner=self.get_planner(),
             plan_validator=self.get_plan_validator(),
             tool_executor=self.get_tool_executor(),
@@ -68,6 +91,9 @@ class CompositionRoot:
 
     def get_tool_policy(self) -> ToolPolicy:
         return self._tool_policy
+
+    def get_task_repository(self) -> TaskRepository:
+        return self._task_repository
 
     def get_state_store(self) -> StateStore:
         return self._state_store

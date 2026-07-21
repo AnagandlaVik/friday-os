@@ -1,18 +1,20 @@
-from friday_brain.contracts.events import EmptyEventPayload
 import asyncio
 import logging
-from uuid import UUID
-from pydantic import BaseModel
 from typing import Any
+from uuid import UUID
+
+from pydantic import BaseModel
 
 from friday_brain.contracts.api import CreateTaskRequest
 from friday_brain.contracts.errors import (
     BrainError,
     IdempotencyConflictError,
     InvalidStateTransitionError,
+    TaskConcurrencyConflictError,
     TaskNotFoundError,
 )
 from friday_brain.contracts.events import (
+    EmptyEventPayload,
     Event,
     TaskCancelledPayload,
     TaskCompletedPayload,
@@ -23,46 +25,42 @@ from friday_brain.contracts.events import (
     TaskPlanValidatedPayload,
 )
 from friday_brain.contracts.tasks import Task, TaskState
-from friday_brain.protocols.event_bus import EventBus
 from friday_brain.protocols.planner import Planner
 from friday_brain.protocols.plan_validator import PlanValidator
-from friday_brain.protocols.state_store import StateStore
+from friday_brain.protocols.task_repository import TaskRepository
 from friday_brain.protocols.tool_executor import ToolExecutor
 
 logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
-    """
-    Orchestrates the entire lifecycle of a task.
-    """
+    """Orchestrates the complete lifecycle of a task."""
 
     def __init__(
         self,
-        state_store: StateStore,
-        event_bus: EventBus,
+        task_repository: TaskRepository,
         planner: Planner,
         plan_validator: PlanValidator,
         tool_executor: ToolExecutor,
     ) -> None:
-        self._state_store = state_store
-        self._event_bus = event_bus
+        self._task_repository = task_repository
         self._planner = planner
         self._plan_validator = plan_validator
         self._tool_executor = tool_executor
 
     async def create_task(
-        self, request: CreateTaskRequest, correlation_id: UUID
+        self,
+        request: CreateTaskRequest,
+        correlation_id: UUID,
     ) -> tuple[Task, bool]:
         if request.idempotency_key:
-            existing_task = await self._state_store.find_by_idempotency_key(
+            existing_task = await self._task_repository.find_by_idempotency_key(
                 request.idempotency_key
             )
             if existing_task:
                 if self._is_equivalent_request(existing_task, request):
                     return existing_task, False
-                else:
-                    raise IdempotencyConflictError(request.idempotency_key)
+                raise IdempotencyConflictError(request.idempotency_key)
 
         task = Task(
             input=request.input,
@@ -71,22 +69,27 @@ class Orchestrator:
             metadata=request.metadata or {},
         )
 
-        await self._state_store.save(task)
-        await self._publish_event(
-            "task.created",
-            task,
-            correlation_id,
-            TaskCreatedPayload(
+        event = self._make_event(
+            event_type="task.created",
+            task=task,
+            correlation_id=correlation_id,
+            payload=TaskCreatedPayload(
                 input=task.input,
                 state=task.state,
                 client_request_id=task.client_request_id,
                 idempotency_key=task.idempotency_key,
             ),
         )
-        return task, True
+
+        persisted = await self._task_repository.create_with_event(
+            task,
+            event,
+        )
+
+        return persisted, persisted.id == task.id
 
     async def start_task_processing(self, task: Task) -> None:
-        """Asynchronously starts the processing of a task."""
+        """Start task processing without blocking the request."""
         asyncio.create_task(self.process_task(task.id))
 
     async def process_task(self, task_id: UUID) -> Task:
@@ -96,10 +99,12 @@ class Orchestrator:
             if await self._check_and_handle_cancellation(task):
                 return await self._get_task_or_fail(task_id)
 
-            # Planning
-            task = await self._transition_and_save(task, TaskState.PLANNING)
-            await self._publish_event(
-                "task.planning_started", task, task.id, TaskPlanningStartedPayload()
+            task = await self._transition_with_event(
+                task=task,
+                new_state=TaskState.PLANNING,
+                event_type="task.planning_started",
+                correlation_id=task.id,
+                payload=TaskPlanningStartedPayload(),
             )
 
             plan = await self._planner.create_plan(task)
@@ -109,17 +114,22 @@ class Orchestrator:
                 return await self._get_task_or_fail(task_id)
 
             await self._plan_validator.validate_plan(plan, task)
-            await self._publish_event(
-                "task.plan_validated",
-                task,
-                task.id,
-                TaskPlanValidatedPayload(plan_id=plan.id),
+
+            await self._append_event(
+                task=task,
+                event_type="task.plan_validated",
+                correlation_id=task.id,
+                payload=TaskPlanValidatedPayload(plan_id=plan.id),
             )
 
-            # Execution
-            task = await self._transition_and_save(task, TaskState.EXECUTING)
-            await self._publish_event(
-                "task.execution_started", task, task.id, TaskExecutionStartedPayload()
+            task = await self._get_task_or_fail(task_id)
+
+            task = await self._transition_with_event(
+                task=task,
+                new_state=TaskState.EXECUTING,
+                event_type="task.execution_started",
+                correlation_id=task.id,
+                payload=TaskExecutionStartedPayload(),
             )
 
             task = await self._get_task_or_fail(task_id)
@@ -134,76 +144,84 @@ class Orchestrator:
 
             task.result = result
 
-            # Completion
-            task = await self._transition_and_save(task, TaskState.COMPLETED)
-            await self._publish_event(
-                "task.completed", task, task.id, TaskCompletedPayload(result=result)
+            await self._transition_with_event(
+                task=task,
+                new_state=TaskState.COMPLETED,
+                event_type="task.completed",
+                correlation_id=task.id,
+                payload=TaskCompletedPayload(result=result),
             )
 
-        except BrainError as e:
+        except BrainError as error:
             logger.error(
-                f"Task {task_id} failed with a domain error: {e.code}", exc_info=True
+                "Task %s failed with domain error %s.",
+                task_id,
+                error.code,
+                exc_info=True,
             )
-            await self._fail_task(task_id, e.code, e.message, e.details)
-        except Exception:
-            logger.exception(f"Task {task_id} failed with an unexpected error.")
             await self._fail_task(
-                task_id, "internal_error", "An unexpected internal error occurred."
+                task_id,
+                error.code,
+                error.message,
+                error.details,
+            )
+        except Exception:
+            logger.exception(
+                "Task %s failed with an unexpected error.",
+                task_id,
+            )
+            await self._fail_task(
+                task_id,
+                "internal_error",
+                "An unexpected internal error occurred.",
             )
 
         return await self._get_task_or_fail(task_id)
 
     async def request_cancellation(self, task_id: UUID) -> Task:
         task = await self._get_task_or_fail(task_id)
-        print(
-            f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "{task.state}", "event": "before_request_cancellation"}}'
-        )
 
-        if task.state in {TaskState.CANCELLED, TaskState.CANCELLATION_REQUESTED}:
-            print(
-                f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "{task.state}", "event": "after_request_cancellation"}}'
-            )
-            return task
-
-        if task.state in {TaskState.COMPLETED, TaskState.FAILED}:
-            # Cannot cancel a terminal task
-            print(
-                f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "{task.state}", "event": "after_request_cancellation"}}'
-            )
+        if task.state in {
+            TaskState.CANCELLED,
+            TaskState.CANCELLATION_REQUESTED,
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+        }:
             return task
 
         try:
-            task = await self._transition_and_save(
-                task, TaskState.CANCELLATION_REQUESTED
+            return await self._transition_with_event(
+                task=task,
+                new_state=TaskState.CANCELLATION_REQUESTED,
+                event_type="task.cancellation_requested",
+                correlation_id=task.id,
+                payload=EmptyEventPayload(),
             )
-            # The orchestrator will notice this state at its next safe boundary.
-            await self._publish_event(
-                "task.cancellation_requested", task, task.id, EmptyEventPayload()
-            )
-            print(
-                f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "{task.state}", "event": "after_request_cancellation"}}'
-            )
-            return task
-        except InvalidStateTransitionError:
-            # Race condition, e.g., task completed just as we tried to cancel.
-            task = await self._get_task_or_fail(task_id)
-            print(
-                f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "{task.state}", "event": "after_request_cancellation"}}'
-            )
-            return task
-
-    async def _check_and_handle_cancellation(self, task: Task) -> bool:
-        if task.state == TaskState.CANCELLATION_REQUESTED:
-            await self._transition_and_save(task, TaskState.CANCELLED)
-            await self._publish_event(
-                "task.cancelled", task, task.id, TaskCancelledPayload()
-            )
-            return True
-        return False
+        except (
+            InvalidStateTransitionError,
+            TaskConcurrencyConflictError,
+        ):
+            return await self._get_task_or_fail(task_id)
 
     async def get_task(self, task_id: UUID) -> Task:
-        """Retrieves a task by its ID."""
+        """Retrieve a task by ID."""
         return await self._get_task_or_fail(task_id)
+
+    async def _check_and_handle_cancellation(
+        self,
+        task: Task,
+    ) -> bool:
+        if task.state != TaskState.CANCELLATION_REQUESTED:
+            return False
+
+        await self._transition_with_event(
+            task=task,
+            new_state=TaskState.CANCELLED,
+            event_type="task.cancelled",
+            correlation_id=task.id,
+            payload=TaskCancelledPayload(),
+        )
+        return True
 
     async def _fail_task(
         self,
@@ -214,55 +232,105 @@ class Orchestrator:
     ) -> None:
         try:
             task = await self._get_task_or_fail(task_id)
+
             if task.state in {
                 TaskState.COMPLETED,
                 TaskState.FAILED,
                 TaskState.CANCELLED,
                 TaskState.CANCELLATION_REQUESTED,
             }:
-                return  # Already in a terminal or pending cancellation state
+                return
 
-            task.error = {"code": code, "message": message, "details": details}
-            task = await self._transition_and_save(task, TaskState.FAILED)
-            await self._publish_event(
-                "task.failed",
-                task,
-                task.id,
-                TaskFailedPayload(
-                    error_code=code, error_message=message, error_details=details
+            task.error = {
+                "code": code,
+                "message": message,
+                "details": details,
+            }
+
+            await self._transition_with_event(
+                task=task,
+                new_state=TaskState.FAILED,
+                event_type="task.failed",
+                correlation_id=task.id,
+                payload=TaskFailedPayload(
+                    error_code=code,
+                    error_message=message,
+                    error_details=details,
                 ),
             )
         except Exception:
             logger.exception(
-                f"Failed to transition task {task_id} to the FAILED state."
+                "Failed to transition task %s to FAILED.",
+                task_id,
             )
 
     async def _get_task_or_fail(self, task_id: UUID) -> Task:
-        task = await self._state_store.get(task_id)
-        if not task:
+        task = await self._task_repository.get(task_id)
+        if task is None:
             raise TaskNotFoundError(task_id)
         return task
 
-    async def _transition_and_save(self, task: Task, new_state: TaskState) -> Task:
-        try:
-            task.update_state(new_state)
-        except InvalidStateTransitionError as e:
-            raise e
-        await self._state_store.save(task)
-        return await self._get_task_or_fail(task.id)
+    async def _transition_with_event(
+        self,
+        task: Task,
+        new_state: TaskState,
+        event_type: str,
+        correlation_id: UUID,
+        payload: BaseModel,
+    ) -> Task:
+        expected_version = task.version
+        task.update_state(new_state)
 
-    async def _publish_event(
-        self, event_type: str, task: Task, correlation_id: UUID, payload: BaseModel
+        event = self._make_event(
+            event_type=event_type,
+            task=task,
+            correlation_id=correlation_id,
+            payload=payload,
+        )
+
+        return await self._task_repository.update_with_event(
+            task=task,
+            expected_version=expected_version,
+            event=event,
+        )
+
+    async def _append_event(
+        self,
+        task: Task,
+        event_type: str,
+        correlation_id: UUID,
+        payload: BaseModel,
     ) -> None:
-        event = Event(
+        event = self._make_event(
+            event_type=event_type,
+            task=task,
+            correlation_id=correlation_id,
+            payload=payload,
+        )
+
+        await self._task_repository.append_event(
+            task_id=task.id,
+            expected_version=task.version,
+            event=event,
+        )
+
+    @staticmethod
+    def _make_event(
+        event_type: str,
+        task: Task,
+        correlation_id: UUID,
+        payload: BaseModel,
+    ) -> Event[Any]:
+        return Event(
             event_type=event_type,
             task_id=task.id,
             correlation_id=correlation_id,
             payload=payload,
         )
-        await self._event_bus.publish(event)
 
-    def _is_equivalent_request(self, task: Task, request: CreateTaskRequest) -> bool:
-        # For this milestone, we only check the input.
-        # A more robust check might involve other fields from the request.
+    @staticmethod
+    def _is_equivalent_request(
+        task: Task,
+        request: CreateTaskRequest,
+    ) -> bool:
         return task.input == request.input

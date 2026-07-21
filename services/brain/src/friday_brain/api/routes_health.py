@@ -43,6 +43,10 @@ async def readiness_check(request: Request) -> HealthResponse | JSONResponse:
     unhealthy_components = []
 
     # Check State Store health
+    task_repository = composition_root.get_task_repository()
+    if not await task_repository.is_healthy():
+        unhealthy_components.append("task_repository")
+
     state_store = composition_root.get_state_store()
     if not await state_store.is_healthy():
         all_healthy = False

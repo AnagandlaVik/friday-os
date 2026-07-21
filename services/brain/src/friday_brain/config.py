@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     allowed_operations: set[str] = {"echo"}
 
     # Adapter Configuration
+    brain_adapter_task_repository: str = "in_memory"
     brain_adapter_state_store: str = "in_memory"
     brain_adapter_event_bus: str = "in_memory"
 
