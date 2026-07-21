@@ -1,3 +1,4 @@
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from typing import Any
@@ -256,3 +257,156 @@ async def test_terminal_failure_is_cached(
     assert first.error.code == "permission_denied"
     assert second.error.code == "permission_denied"
     assert handler.calls == 1
+
+
+class BlockingCountingHandler:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def execute(
+        self,
+        arguments: BaseModel,
+        context: ToolExecutionContext,
+    ) -> Any:
+        del context
+        self.calls += 1
+        assert isinstance(arguments, LedgerInput)
+
+        self.started.set()
+        await self.release.wait()
+
+        return {
+            "result": arguments.message,
+        }
+
+
+@pytest.mark.asyncio
+async def test_two_runtime_calls_execute_handler_once(
+    runtime_fixture,
+) -> None:
+    task, lease, checkpoint, repository = runtime_fixture
+    handler = BlockingCountingHandler()
+
+    first_runtime = SecureToolRuntime(
+        registry=make_registry(),
+        handlers={"test": handler},
+        invocation_repository=repository,
+        worker_id="runtime-worker",
+        reservation_duration_sec=5.0,
+        heartbeat_interval_sec=1.0,
+    )
+    second_runtime = SecureToolRuntime(
+        registry=make_registry(),
+        handlers={"test": handler},
+        invocation_repository=repository,
+        worker_id="runtime-worker",
+        reservation_duration_sec=5.0,
+        heartbeat_interval_sec=1.0,
+    )
+
+    invocation = ToolInvocation(
+        tool_name="test",
+        arguments={"message": "hello"},
+        idempotency_key=checkpoint.idempotency_key,
+        task_id=task.id,
+        checkpoint_id=checkpoint.checkpoint_id,
+    )
+
+    first_execution = asyncio.create_task(
+        first_runtime.execute(
+            invocation,
+            lease_token=lease.lease_token,
+        )
+    )
+
+    await asyncio.wait_for(
+        handler.started.wait(),
+        timeout=2.0,
+    )
+
+    second_result = await second_runtime.execute(
+        invocation,
+        lease_token=lease.lease_token,
+    )
+
+    assert second_result.success is False
+    assert second_result.error is not None
+    assert second_result.error.code == "tool_invocation_busy"
+
+    handler.release.set()
+    first_result = await first_execution
+
+    assert first_result.success is True
+    assert handler.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_takeover_fences_previous_claim(
+    runtime_fixture,
+) -> None:
+    task, lease, checkpoint, repository = runtime_fixture
+
+    invocation = ToolInvocation(
+        tool_name="test",
+        arguments={"message": "hello"},
+        idempotency_key=checkpoint.idempotency_key,
+        task_id=task.id,
+        checkpoint_id=checkpoint.checkpoint_id,
+    )
+
+    first_claim = await repository.claim(
+        invocation=invocation,
+        lease_token=lease.lease_token,
+        worker_id="runtime-worker",
+        reservation_duration_sec=0.2,
+    )
+    assert first_claim.outcome == "acquired"
+
+    first_executing = await repository.mark_executing(
+        invocation_id=(first_claim.record.invocation_id),
+        claim_token=(first_claim.record.claim_token),
+        lease_token=lease.lease_token,
+        reservation_duration_sec=0.2,
+    )
+    assert first_executing is not None
+
+    await asyncio.sleep(0.35)
+
+    second_claim = await repository.claim(
+        invocation=invocation,
+        lease_token=lease.lease_token,
+        worker_id="runtime-worker",
+        reservation_duration_sec=5.0,
+    )
+
+    assert second_claim.outcome == "acquired"
+    assert second_claim.record.claim_token != first_claim.record.claim_token
+
+    stale_completion = await repository.complete_success(
+        invocation_id=(first_claim.record.invocation_id),
+        claim_token=(first_claim.record.claim_token),
+        lease_token=lease.lease_token,
+        output={"result": "stale"},
+    )
+
+    assert stale_completion is None
+
+    second_executing = await repository.mark_executing(
+        invocation_id=(second_claim.record.invocation_id),
+        claim_token=(second_claim.record.claim_token),
+        lease_token=lease.lease_token,
+        reservation_duration_sec=5.0,
+    )
+    assert second_executing is not None
+
+    completed = await repository.complete_success(
+        invocation_id=(second_claim.record.invocation_id),
+        claim_token=(second_claim.record.claim_token),
+        lease_token=lease.lease_token,
+        output={"result": "recovered"},
+    )
+
+    assert completed is not None
+    assert completed.output == {"result": "recovered"}

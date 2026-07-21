@@ -387,3 +387,52 @@ async def test_authorization_actions_create_audit_events(
     assert "permission_granted" in event_types
     assert "confirmation_granted" in event_types
     assert "confirmation_consumed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_confirmation_is_consumed_once_under_concurrency(
+    authorization_repository: PostgresAuthorizationRepository,
+) -> None:
+    task, checkpoint = await create_task_and_checkpoint()
+    digest = digest_tool_arguments(
+        {
+            "path": "approved.txt",
+            "content": "approved",
+        }
+    )
+
+    await authorization_repository.grant_confirmation(
+        task_id=task.id,
+        checkpoint_id=checkpoint.checkpoint_id,
+        tool_name="filesystem.write_text",
+        arguments_digest=digest,
+        granted_by="user-one",
+        expires_at=(datetime.now(UTC) + timedelta(minutes=5)),
+    )
+
+    results = await asyncio.gather(
+        *[
+            authorization_repository.consume_confirmation(
+                task_id=task.id,
+                checkpoint_id=(checkpoint.checkpoint_id),
+                tool_name=("filesystem.write_text"),
+                arguments_digest=digest,
+                at=datetime.now(UTC),
+            )
+            for _ in range(4)
+        ]
+    )
+
+    consumed = [result for result in results if result is not None]
+
+    assert len(consumed) == 1
+
+    assert (
+        await authorization_repository.has_consumed_confirmation(
+            task_id=task.id,
+            checkpoint_id=(checkpoint.checkpoint_id),
+            tool_name="filesystem.write_text",
+            arguments_digest=digest,
+        )
+        is True
+    )

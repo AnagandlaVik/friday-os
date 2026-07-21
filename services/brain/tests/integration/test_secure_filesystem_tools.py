@@ -1,3 +1,4 @@
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -6,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -35,7 +37,9 @@ from friday_brain.adapters.postgres_tool_invocation_repository import (
 )
 from friday_brain.application.secure_tool_runtime import (
     SecureToolRuntime,
+    ToolHandlerError,
 )
+from friday_brain.application.tool_registry import ToolRegistry
 from friday_brain.contracts.events import (
     Event,
     TaskCreatedPayload,
@@ -46,11 +50,16 @@ from friday_brain.contracts.plans import (
 )
 from friday_brain.contracts.tasks import Task
 from friday_brain.contracts.tools import (
+    ToolDefinition,
     ToolInvocation,
     ToolPermission,
+    ToolRetryPolicy,
 )
 from friday_brain.protocols.execution_lease_repository import (
     ExecutionLease,
+)
+from friday_brain.protocols.tool_handler import (
+    ToolExecutionContext,
 )
 from friday_brain.protocols.execution_plan_repository import (
     StepCheckpoint,
@@ -518,3 +527,199 @@ async def test_changed_write_arguments_cannot_reuse_confirmation(
     assert result.error is not None
     assert result.error.code == "tool_confirmation_required"
     assert not (environment["sandbox"].root / "changed.txt").exists()
+
+
+class AuthorizationRetryInput(BaseModel):
+    message: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AuthorizationRetryOutput(BaseModel):
+    result: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FlakyAuthorizationHandler:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(
+        self,
+        arguments: BaseModel,
+        context: ToolExecutionContext,
+    ) -> Any:
+        del context
+        assert isinstance(
+            arguments,
+            AuthorizationRetryInput,
+        )
+
+        self.calls += 1
+
+        if self.calls == 1:
+            raise ToolHandlerError(
+                code="transient",
+                message="Temporary failure.",
+                retryable=True,
+            )
+
+        return {
+            "result": arguments.message,
+        }
+
+
+def make_authorization_retry_runtime(
+    environment: dict[str, Any],
+    handler: FlakyAuthorizationHandler,
+) -> SecureToolRuntime:
+    registry = ToolRegistry(
+        [
+            ToolDefinition(
+                name="hardening.retry",
+                description=("Verify authorization is reloaded before every retry."),
+                input_model=AuthorizationRetryInput,
+                output_model=AuthorizationRetryOutput,
+                permissions=frozenset(
+                    {
+                        ToolPermission.READ_DATA,
+                    }
+                ),
+                timeout_sec=5.0,
+                retry_policy=ToolRetryPolicy(
+                    max_attempts=2,
+                    retryable_error_codes=(frozenset({"transient"})),
+                ),
+            )
+        ]
+    )
+
+    return SecureToolRuntime(
+        registry=registry,
+        handlers={"hardening.retry": handler},
+        invocation_repository=environment["invocation_repository"],
+        authorization_repository=environment["authorization_repository"],
+        worker_id=environment["worker_id"],
+        reservation_duration_sec=10.0,
+        heartbeat_interval_sec=2.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_revoked_permission_blocks_retry(
+    filesystem_environment,
+) -> None:
+    environment = filesystem_environment
+    authorization_repository = environment["authorization_repository"]
+    handler = FlakyAuthorizationHandler()
+    runtime = make_authorization_retry_runtime(
+        environment,
+        handler,
+    )
+
+    task, lease, checkpoint = await create_task_checkpoint(
+        task_repository=environment["task_repository"],
+        lease_repository=environment["lease_repository"],
+        plan_repository=environment["plan_repository"],
+        worker_id=environment["worker_id"],
+        operation="hardening.retry",
+        arguments={"message": "hello"},
+    )
+
+    await authorization_repository.grant_permission(
+        task_id=task.id,
+        permission=ToolPermission.READ_DATA,
+        granted_by="test-user",
+        expires_at=None,
+    )
+
+    invocation = make_invocation(
+        task=task,
+        checkpoint=checkpoint,
+    )
+
+    first = await runtime.execute(
+        invocation,
+        lease_token=lease.lease_token,
+    )
+
+    assert first.success is False
+    assert first.error is not None
+    assert first.error.code == "transient"
+    assert first.error.retryable is True
+    assert handler.calls == 1
+
+    revoked = await authorization_repository.revoke_permission(
+        task_id=task.id,
+        permission=ToolPermission.READ_DATA,
+        actor_id="test-user",
+        reason="Access removed.",
+    )
+    assert revoked is not None
+
+    second = await runtime.execute(
+        invocation,
+        lease_token=lease.lease_token,
+    )
+
+    assert second.success is False
+    assert second.error is not None
+    assert second.error.code == "tool_permission_denied"
+    assert handler.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_permission_blocks_retry(
+    filesystem_environment,
+) -> None:
+    environment = filesystem_environment
+    authorization_repository = environment["authorization_repository"]
+    handler = FlakyAuthorizationHandler()
+    runtime = make_authorization_retry_runtime(
+        environment,
+        handler,
+    )
+
+    task, lease, checkpoint = await create_task_checkpoint(
+        task_repository=environment["task_repository"],
+        lease_repository=environment["lease_repository"],
+        plan_repository=environment["plan_repository"],
+        worker_id=environment["worker_id"],
+        operation="hardening.retry",
+        arguments={"message": "hello"},
+    )
+
+    await authorization_repository.grant_permission(
+        task_id=task.id,
+        permission=ToolPermission.READ_DATA,
+        granted_by="test-user",
+        expires_at=(datetime.now(UTC) + timedelta(seconds=1)),
+    )
+
+    invocation = make_invocation(
+        task=task,
+        checkpoint=checkpoint,
+    )
+
+    first = await runtime.execute(
+        invocation,
+        lease_token=lease.lease_token,
+    )
+
+    assert first.success is False
+    assert first.error is not None
+    assert first.error.code == "transient"
+    assert handler.calls == 1
+
+    await asyncio.sleep(1.1)
+
+    second = await runtime.execute(
+        invocation,
+        lease_token=lease.lease_token,
+    )
+
+    assert second.success is False
+    assert second.error is not None
+    assert second.error.code == "tool_permission_denied"
+    assert handler.calls == 1

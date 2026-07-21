@@ -503,27 +503,40 @@ class SecureToolRuntime:
             )
         )
 
-        done, _ = await asyncio.wait(
-            {execution, heartbeat},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        try:
+            done, _ = await asyncio.wait(
+                {execution, heartbeat},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-        if execution in done:
-            heartbeat.cancel()
+            if execution in done:
+                return await execution
+
+            execution.cancel()
             await asyncio.gather(
+                execution,
+                return_exceptions=True,
+            )
+
+            # A completed heartbeat task should raise the ownership
+            # error that caused execution to be cancelled.
+            await heartbeat
+
+            raise ToolInvocationLeaseLostError("Tool invocation ownership was lost.")
+        finally:
+            # Cancelling runtime.execute() must not leave either child
+            # task running in the background. The durable invocation
+            # remains executing until its reservation expires, which
+            # prevents an immediate duplicate side effect.
+            for task in (execution, heartbeat):
+                if not task.done():
+                    task.cancel()
+
+            await asyncio.gather(
+                execution,
                 heartbeat,
                 return_exceptions=True,
             )
-            return await execution
-
-        execution.cancel()
-        await asyncio.gather(
-            execution,
-            return_exceptions=True,
-        )
-        await heartbeat
-
-        raise ToolInvocationLeaseLostError("Tool invocation ownership was lost.")
 
     async def _heartbeat_invocation(
         self,
@@ -537,12 +550,21 @@ class SecureToolRuntime:
         while True:
             await asyncio.sleep(self._heartbeat_interval_sec)
 
-            renewed = await self._invocation_repository.renew(
-                invocation_id=record.invocation_id,
-                claim_token=record.claim_token,
-                lease_token=lease_token,
-                reservation_duration_sec=(self._reservation_duration_sec),
-            )
+            try:
+                renewed = await self._invocation_repository.renew(
+                    invocation_id=(record.invocation_id),
+                    claim_token=record.claim_token,
+                    lease_token=lease_token,
+                    reservation_duration_sec=(self._reservation_duration_sec),
+                )
+            except asyncio.CancelledError:
+                raise
+            except ToolInvocationLeaseLostError:
+                raise
+            except Exception as error:
+                raise ToolInvocationLeaseLostError(
+                    "Tool invocation reservation could not be safely renewed."
+                ) from error
 
             if renewed is None:
                 raise ToolInvocationLeaseLostError(
