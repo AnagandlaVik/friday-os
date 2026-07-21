@@ -1,3 +1,4 @@
+import uuid
 from typing import Any
 from uuid import UUID
 
@@ -87,3 +88,21 @@ class ValidationError(BrainError):
 
     def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(message, code="validation_error", details=details)
+
+
+class TaskConcurrencyConflictError(BrainError):
+    """Raised when a task is updated using a stale version."""
+
+    def __init__(
+        self,
+        task_id: uuid.UUID,
+        expected_version: int,
+    ) -> None:
+        super().__init__(
+            f"Task '{task_id}' was modified by another operation.",
+            code="task_concurrency_conflict",
+            details={
+                "task_id": str(task_id),
+                "expected_version": expected_version,
+            },
+        )

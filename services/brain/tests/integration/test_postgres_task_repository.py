@@ -9,9 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from friday_brain.adapters.postgres_task_repository import (
     PostgresTaskRepository,
 )
-from friday_brain.contracts.errors import IdempotencyConflictError
-from friday_brain.contracts.events import Event, TaskCreatedPayload
-from friday_brain.contracts.tasks import Task
+from friday_brain.contracts.errors import (
+    IdempotencyConflictError,
+    TaskConcurrencyConflictError,
+)
+from friday_brain.contracts.events import (
+    Event,
+    TaskCreatedPayload,
+    TaskPlanValidatedPayload,
+    TaskPlanningStartedPayload,
+)
+from friday_brain.contracts.tasks import Task, TaskState
 
 
 POSTGRES_URL = os.getenv(
@@ -251,3 +259,265 @@ async def test_event_failure_rolls_back_task_creation(
     assert task_count == 1
     assert event_count == 1
     assert outbox_count == 1
+
+
+@pytest.mark.asyncio
+async def test_update_with_event_increments_version_atomically(
+    repository: PostgresTaskRepository,
+    postgres_engine: AsyncEngine,
+) -> None:
+    task = Task(input="Versioned task")
+    created = await repository.create_with_event(
+        task,
+        make_created_event(task),
+    )
+
+    updated_task = created.model_copy(deep=True)
+    updated_task.update_state(TaskState.PLANNING)
+
+    event = Event(
+        event_type="task.planning_started",
+        task_id=created.id,
+        correlation_id=uuid4(),
+        payload=TaskPlanningStartedPayload(),
+    )
+
+    persisted = await repository.update_with_event(
+        updated_task,
+        expected_version=created.version,
+        event=event,
+    )
+
+    assert persisted.version == 2
+    assert persisted.state == TaskState.PLANNING
+
+    async with postgres_engine.connect() as connection:
+        task_version = await connection.scalar(
+            text(
+                """
+                SELECT version
+                FROM tasks
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+        event_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM task_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+        outbox_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM outbox_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+
+    assert task_version == 2
+    assert event_count == 2
+    assert outbox_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_update_creates_no_event_or_outbox_row(
+    repository: PostgresTaskRepository,
+    postgres_engine: AsyncEngine,
+) -> None:
+    task = Task(input="Concurrency task")
+    created = await repository.create_with_event(
+        task,
+        make_created_event(task),
+    )
+
+    first_update = created.model_copy(deep=True)
+    first_update.update_state(TaskState.PLANNING)
+
+    await repository.update_with_event(
+        first_update,
+        expected_version=1,
+        event=Event(
+            event_type="task.planning_started",
+            task_id=created.id,
+            correlation_id=uuid4(),
+            payload=TaskPlanningStartedPayload(),
+        ),
+    )
+
+    stale_update = created.model_copy(deep=True)
+    stale_update.update_state(TaskState.PLANNING)
+
+    with pytest.raises(TaskConcurrencyConflictError):
+        await repository.update_with_event(
+            stale_update,
+            expected_version=1,
+            event=Event(
+                event_type="task.planning_started",
+                task_id=created.id,
+                correlation_id=uuid4(),
+                payload=TaskPlanningStartedPayload(),
+            ),
+        )
+
+    async with postgres_engine.connect() as connection:
+        task_version = await connection.scalar(
+            text(
+                """
+                SELECT version
+                FROM tasks
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+        event_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM task_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+        outbox_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM outbox_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+
+    assert task_version == 2
+    assert event_count == 2
+    assert outbox_count == 2
+
+
+@pytest.mark.asyncio
+async def test_append_event_does_not_increment_task_version(
+    repository: PostgresTaskRepository,
+    postgres_engine: AsyncEngine,
+) -> None:
+    task = Task(input="Event-only task")
+    created = await repository.create_with_event(
+        task,
+        make_created_event(task),
+    )
+
+    event = Event(
+        event_type="task.plan_validated",
+        task_id=created.id,
+        correlation_id=uuid4(),
+        payload=TaskPlanValidatedPayload(plan_id=uuid4()),
+    )
+
+    await repository.append_event(
+        task_id=created.id,
+        expected_version=created.version,
+        event=event,
+    )
+
+    reloaded = await repository.get(created.id)
+
+    assert reloaded is not None
+    assert reloaded.version == 1
+
+    async with postgres_engine.connect() as connection:
+        event_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM task_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+        outbox_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM outbox_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+
+    assert event_count == 2
+    assert outbox_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_append_event_is_rejected(
+    repository: PostgresTaskRepository,
+    postgres_engine: AsyncEngine,
+) -> None:
+    task = Task(input="Stale append task")
+    created = await repository.create_with_event(
+        task,
+        make_created_event(task),
+    )
+
+    planning = created.model_copy(deep=True)
+    planning.update_state(TaskState.PLANNING)
+
+    await repository.update_with_event(
+        planning,
+        expected_version=1,
+        event=Event(
+            event_type="task.planning_started",
+            task_id=created.id,
+            correlation_id=uuid4(),
+            payload=TaskPlanningStartedPayload(),
+        ),
+    )
+
+    with pytest.raises(TaskConcurrencyConflictError):
+        await repository.append_event(
+            task_id=created.id,
+            expected_version=1,
+            event=Event(
+                event_type="task.plan_validated",
+                task_id=created.id,
+                correlation_id=uuid4(),
+                payload=TaskPlanValidatedPayload(plan_id=uuid4()),
+            ),
+        )
+
+    async with postgres_engine.connect() as connection:
+        event_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM task_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+        outbox_count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM outbox_events
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": created.id},
+        )
+
+    assert event_count == 2
+    assert outbox_count == 2

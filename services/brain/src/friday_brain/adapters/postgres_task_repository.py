@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from friday_brain.contracts.errors import IdempotencyConflictError
+from friday_brain.contracts.errors import (
+    IdempotencyConflictError,
+    TaskConcurrencyConflictError,
+    TaskNotFoundError,
+)
 from friday_brain.contracts.events import Event
 from friday_brain.contracts.tasks import Task, TaskState
 
@@ -154,7 +158,7 @@ class PostgresTaskRepository:
     ) -> Task:
         """Atomically create a task, task event, and outbox event."""
         engine = self._require_engine()
-        self._validate_event_task(task, event)
+        self._validate_event_task_id(task.id, event)
 
         try:
             async with engine.begin() as connection:
@@ -206,7 +210,8 @@ class PostgresTaskRepository:
 
                 await self._insert_event_and_outbox(
                     connection=connection,
-                    task=task,
+                    task_id=task.id,
+                    task_version=task.version,
                     event=event,
                 )
         except IntegrityError:
@@ -235,10 +240,75 @@ class PostgresTaskRepository:
         expected_version: int,
         event: Event[Any],
     ) -> Task:
-        """Atomically update a task and associated event records."""
-        raise NotImplementedError(
-            "Transactional updates are implemented in Milestone 3C."
-        )
+        """Atomically update a task and append its event and outbox row."""
+        engine = self._require_engine()
+        self._validate_event_task_id(task.id, event)
+
+        next_version = expected_version + 1
+
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    UPDATE tasks
+                    SET
+                        input = :input,
+                        state = :state,
+                        client_request_id = :client_request_id,
+                        idempotency_key = :idempotency_key,
+                        metadata = CAST(:metadata AS JSONB),
+                        result = CAST(:result AS JSONB),
+                        error = CAST(:error AS JSONB),
+                        version = :next_version,
+                        updated_at = :updated_at
+                    WHERE id = :task_id
+                      AND version = :expected_version
+                    RETURNING
+                        id,
+                        input,
+                        state,
+                        client_request_id,
+                        idempotency_key,
+                        metadata,
+                        result,
+                        error,
+                        version,
+                        created_at,
+                        updated_at
+                    """
+                ),
+                {
+                    "task_id": task.id,
+                    "input": task.input,
+                    "state": self._state_value(task.state),
+                    "client_request_id": task.client_request_id,
+                    "idempotency_key": task.idempotency_key,
+                    "metadata": self._json(task.metadata),
+                    "result": self._json_or_none(task.result),
+                    "error": self._json_or_none(task.error),
+                    "next_version": next_version,
+                    "expected_version": expected_version,
+                    "updated_at": task.updated_at,
+                },
+            )
+            row = result.mappings().one_or_none()
+
+            if row is None:
+                raise TaskConcurrencyConflictError(
+                    task.id,
+                    expected_version,
+                )
+
+            persisted_task = self._row_to_task(row)
+
+            await self._insert_event_and_outbox(
+                connection=connection,
+                task_id=persisted_task.id,
+                task_version=persisted_task.version,
+                event=event,
+            )
+
+        return persisted_task
 
     async def append_event(
         self,
@@ -247,14 +317,44 @@ class PostgresTaskRepository:
         event: Event[Any],
     ) -> None:
         """Atomically append an event without changing task state."""
-        raise NotImplementedError(
-            "Transactional event appending is implemented in Milestone 3C."
-        )
+        engine = self._require_engine()
+        self._validate_event_task_id(task_id, event)
+
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT version
+                    FROM tasks
+                    WHERE id = :task_id
+                    FOR SHARE
+                    """
+                ),
+                {"task_id": task_id},
+            )
+            current_version = result.scalar_one_or_none()
+
+            if current_version is None:
+                raise TaskNotFoundError(task_id)
+
+            if current_version != expected_version:
+                raise TaskConcurrencyConflictError(
+                    task_id,
+                    expected_version,
+                )
+
+            await self._insert_event_and_outbox(
+                connection=connection,
+                task_id=task_id,
+                task_version=current_version,
+                event=event,
+            )
 
     async def _insert_event_and_outbox(
         self,
         connection: AsyncConnection,
-        task: Task,
+        task_id: UUID,
+        task_version: int,
         event: Event[Any],
     ) -> None:
         event_data = event.model_dump(mode="json")
@@ -292,8 +392,8 @@ class PostgresTaskRepository:
             ),
             {
                 "event_id": event.event_id,
-                "task_id": event.task_id,
-                "task_version": task.version,
+                "task_id": task_id,
+                "task_version": task_version,
                 "event_type": event.event_type,
                 "schema_version": event.schema_version,
                 "correlation_id": event.correlation_id,
@@ -324,7 +424,7 @@ class PostgresTaskRepository:
             ),
             {
                 "event_id": event.event_id,
-                "task_id": event.task_id,
+                "task_id": task_id,
                 "subject": self._event_subject(event.event_type),
                 "event_data": self._json(event_data),
             },
@@ -339,11 +439,11 @@ class PostgresTaskRepository:
         return f"{self._subject_prefix}.{event_type}"
 
     @staticmethod
-    def _validate_event_task(
-        task: Task,
+    def _validate_event_task_id(
+        task_id: UUID,
         event: Event[Any],
     ) -> None:
-        if event.task_id != task.id:
+        if event.task_id != task_id:
             raise ValueError("Event task_id must match the persisted task ID.")
 
     @staticmethod
