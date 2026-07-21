@@ -89,6 +89,14 @@ class ExecutionPlanRepository(Protocol):
         lease_token: UUID,
     ) -> StepCheckpoint | None: ...
 
+    async def resume_checkpoint(
+        self,
+        checkpoint_id: UUID,
+        lease_token: UUID,
+    ) -> StepCheckpoint | None:
+        """Reclaim a checkpoint interrupted by a lost lease."""
+        ...
+
     async def complete_checkpoint(
         self,
         checkpoint_id: UUID,

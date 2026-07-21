@@ -24,6 +24,7 @@ from friday_brain.contracts.events import (
     TaskPlanningStartedPayload,
     TaskPlanValidatedPayload,
 )
+from friday_brain.application.durable_task_processor import DurableTaskProcessor
 from friday_brain.contracts.tasks import Task, TaskState
 from friday_brain.protocols.planner import Planner
 from friday_brain.protocols.plan_validator import PlanValidator
@@ -42,11 +43,13 @@ class Orchestrator:
         planner: Planner,
         plan_validator: PlanValidator,
         tool_executor: ToolExecutor,
+        durable_processor: DurableTaskProcessor | None = None,
     ) -> None:
         self._task_repository = task_repository
         self._planner = planner
         self._plan_validator = plan_validator
         self._tool_executor = tool_executor
+        self._durable_processor = durable_processor
 
     async def create_task(
         self,
@@ -93,6 +96,9 @@ class Orchestrator:
         asyncio.create_task(self.process_task(task.id))
 
     async def process_task(self, task_id: UUID) -> Task:
+        if self._durable_processor is not None:
+            return await self._durable_processor.process_task(task_id)
+
         try:
             task = await self._get_task_or_fail(task_id)
 

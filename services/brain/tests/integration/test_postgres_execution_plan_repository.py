@@ -434,3 +434,70 @@ async def test_cancel_incomplete_checkpoints(
         "cancelled",
         "cancelled",
     ]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_checkpoint_can_be_reclaimed(
+    repositories,
+) -> None:
+    _, lease_repository, plan_repository = repositories
+    task, first_lease = await create_leased_task(repositories)
+    plan = make_plan(task)
+
+    await plan_repository.save_validated_plan(
+        task_id=task.id,
+        task_version=task.version,
+        execution_attempt=first_lease.execution_attempt,
+        lease_token=first_lease.lease_token,
+        plan=plan,
+    )
+
+    checkpoint = (await plan_repository.list_checkpoints(plan.id))[0]
+
+    first_start = await plan_repository.start_checkpoint(
+        checkpoint.checkpoint_id,
+        first_lease.lease_token,
+    )
+
+    assert first_start is not None
+    assert first_start.attempt_count == 1
+
+    async with lease_repository._require_engine().begin() as connection:
+        await connection.execute(
+            text(
+                """
+                UPDATE task_execution_leases
+                SET
+                    acquired_at = now() - INTERVAL '2 seconds',
+                    heartbeat_at = now() - INTERVAL '2 seconds',
+                    expires_at = now() - INTERVAL '1 second',
+                    updated_at = now()
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": task.id},
+        )
+
+    second_lease = await lease_repository.acquire(
+        task_id=task.id,
+        worker_id="worker-two",
+        lease_duration_sec=30.0,
+    )
+
+    assert second_lease is not None
+
+    stale_resume = await plan_repository.resume_checkpoint(
+        checkpoint.checkpoint_id,
+        first_lease.lease_token,
+    )
+    assert stale_resume is None
+
+    recovered = await plan_repository.resume_checkpoint(
+        checkpoint.checkpoint_id,
+        second_lease.lease_token,
+    )
+
+    assert recovered is not None
+    assert recovered.status == "executing"
+    assert recovered.attempt_count == 2
+    assert recovered.idempotency_key == checkpoint.idempotency_key

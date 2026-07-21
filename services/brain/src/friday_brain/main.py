@@ -27,6 +27,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Start infrastructure adapters
     await composition_root.get_task_repository().start()
     logger.info("Task repository started.")
+
+    execution_lease_repository = composition_root.get_execution_lease_repository()
+    if execution_lease_repository is not None:
+        await execution_lease_repository.start()
+        logger.info("Execution lease repository started.")
+
+    execution_plan_repository = composition_root.get_execution_plan_repository()
+    if execution_plan_repository is not None:
+        await execution_plan_repository.start()
+        logger.info("Execution plan repository started.")
     await composition_root.get_state_store().start()
     logger.info("State store started.")
 
@@ -59,6 +69,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await composition_root.get_event_bus().stop()
     logger.info("Event bus stopped.")
+
+    execution_plan_repository = composition_root.get_execution_plan_repository()
+    if execution_plan_repository is not None:
+        await execution_plan_repository.stop()
+        logger.info("Execution plan repository stopped.")
+
+    execution_lease_repository = composition_root.get_execution_lease_repository()
+    if execution_lease_repository is not None:
+        await execution_lease_repository.stop()
+        logger.info("Execution lease repository stopped.")
 
     await composition_root.get_state_store().stop()
     await composition_root.get_task_repository().stop()
