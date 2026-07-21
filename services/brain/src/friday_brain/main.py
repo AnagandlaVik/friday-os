@@ -33,10 +33,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await composition_root.get_event_bus().start()
     logger.info("Event bus started.")
 
+    outbox_repository = composition_root.get_outbox_repository()
+    if outbox_repository is not None:
+        await outbox_repository.start()
+        logger.info("Outbox repository started.")
+
+    outbox_publisher = composition_root.get_outbox_publisher()
+    if outbox_publisher is not None:
+        await outbox_publisher.start()
+        logger.info("Outbox publisher started.")
+
     yield
 
     logger.info("Application shutting down...")
     # Stop infrastructure adapters
+    outbox_publisher = composition_root.get_outbox_publisher()
+    if outbox_publisher is not None:
+        await outbox_publisher.stop()
+        logger.info("Outbox publisher stopped.")
+
+    outbox_repository = composition_root.get_outbox_repository()
+    if outbox_repository is not None:
+        await outbox_repository.stop()
+        logger.info("Outbox repository stopped.")
+
     await composition_root.get_event_bus().stop()
     logger.info("Event bus stopped.")
 
