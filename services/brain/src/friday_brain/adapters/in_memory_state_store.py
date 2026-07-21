@@ -16,6 +16,14 @@ class InMemoryStateStore:
         self._idempotency_keys: Dict[str, uuid.UUID] = {}
         self._lock = asyncio.Lock()
 
+    async def start(self) -> None:
+        """Initialize connection pools or local state caches."""
+        pass
+
+    async def stop(self) -> None:
+        """Gracefully release connection pools and file handles."""
+        pass
+
     def reset(self) -> None:
         """Clears the store for testing purposes."""
         self._tasks.clear()
@@ -26,6 +34,14 @@ class InMemoryStateStore:
             f'{{"timestamp": {__import__("time").time()}, "task_id": "{task.id}", "state": "{task.state}", "event": "before_state_store_save"}}'
         )
         async with self._lock:
+            existing = self._tasks.get(task.id)
+            if existing and existing.version != task.version:
+                from friday_brain.contracts.errors import InvalidStateTransitionError
+                raise InvalidStateTransitionError(
+                    from_state=f"version {existing.version}",
+                    to_state=f"version {task.version}"
+                )
+            task.version += 1
             # Store a copy to prevent mutation outside the store
             task_copy = task.model_copy(deep=True)
             self._tasks[task_copy.id] = task_copy

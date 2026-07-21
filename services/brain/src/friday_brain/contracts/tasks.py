@@ -32,6 +32,7 @@ class Task(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     result: Any | None = None
     error: dict[str, Any] | None = None
+    version: int = 1
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

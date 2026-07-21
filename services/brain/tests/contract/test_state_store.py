@@ -13,6 +13,14 @@ class StateStoreContract:
         raise NotImplementedError
 
     @pytest.mark.asyncio
+    async def test_lifecycle(self, store: StateStore):
+        try:
+            await store.start()
+            await store.stop()
+        except Exception as e:
+            pytest.fail(f"StateStore lifecycle (start/stop) failed with error: {e}")
+
+    @pytest.mark.asyncio
     async def test_save_and_get_task(self, store: StateStore):
         task = Task(input="test")
         await store.save(task)
@@ -60,3 +68,37 @@ class StateStoreContract:
         # Get the task again, it should be unchanged
         store_task = await store.get(task.id)
         assert store_task.input == "test"
+
+    @pytest.mark.asyncio
+    async def test_save_increments_version(self, store: StateStore):
+        task = Task(input="test")
+        assert task.version == 1
+        await store.save(task)
+        assert task.version == 2
+
+        retrieved = await store.get(task.id)
+        assert retrieved.version == 2
+
+    @pytest.mark.asyncio
+    async def test_optimistic_concurrency(self, store: StateStore):
+        from friday_brain.contracts.errors import InvalidStateTransitionError
+
+        task = Task(input="test")
+        await store.save(task)  # Now version 2
+
+        # Get two copies of the same task at version 2
+        copy1 = await store.get(task.id)
+        copy2 = await store.get(task.id)
+
+        assert copy1.version == 2
+        assert copy2.version == 2
+
+        # Modify and save copy1 -> should succeed and bump to version 3
+        copy1.input = "updated 1"
+        await store.save(copy1)
+        assert copy1.version == 3
+
+        # Modify copy2 and attempt to save -> should fail with InvalidStateTransitionError
+        copy2.input = "updated 2"
+        with pytest.raises(InvalidStateTransitionError):
+            await store.save(copy2)

@@ -10,6 +10,18 @@ class EventBus(Protocol):
     Protocol for an event bus to publish domain events.
     """
 
+    async def start(self) -> None:
+        """
+        Initialize the event bus connection and start active background consumers.
+        """
+        ...
+
+    async def stop(self) -> None:
+        """
+        Gracefully drain active consumers and close all network connections.
+        """
+        ...
+
     def subscribe(self, subscriber: "Subscriber") -> None:
         """
         Registers a subscriber to handle events.
