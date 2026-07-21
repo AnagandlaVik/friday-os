@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from structlog.stdlib import get_logger
 
-from .api import errors, routes_health, routes_tasks
+from .api import routes_metrics, errors, routes_health, routes_tasks
 from .api.middleware import CorrelationIdMiddleware
 from friday_brain.composition import CompositionRoot
 from friday_brain.config import settings
@@ -111,7 +111,7 @@ def create_app(composition_root: CompositionRoot | None = None) -> FastAPI:
     """
     Factory function to create the FastAPI application.
     """
-    setup_logging()
+    setup_logging(settings.log_level)
 
     if composition_root is None:
         composition_root = CompositionRoot(app_settings=settings)
@@ -139,6 +139,7 @@ def create_app(composition_root: CompositionRoot | None = None) -> FastAPI:
 
     # Routers
     app.include_router(routes_health.router)
+    app.include_router(routes_metrics.router)
     app.include_router(routes_tasks.router, prefix="/api/v1")
 
     return app

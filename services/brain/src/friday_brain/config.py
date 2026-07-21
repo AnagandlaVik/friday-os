@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     host: str = "127.0.0.1"
     port: int = 8000
+    log_level: str = "INFO"
 
     # CORS settings
     # For Milestone 1, we are being restrictive.

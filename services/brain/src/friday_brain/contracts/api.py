@@ -1,5 +1,13 @@
-from pydantic import BaseModel, Field, ConfigDict
-from .tasks import Task
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from friday_brain.contracts.authorization import (
+    AuthorizationEventType,
+)
+from friday_brain.contracts.tasks import Task
+from friday_brain.contracts.tools import ToolPermission
 
 
 class CreateTaskRequest(BaseModel):
@@ -39,15 +47,6 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     service: str = "friday-brain"
-
-
-from datetime import datetime
-from uuid import UUID
-
-from friday_brain.contracts.authorization import (
-    AuthorizationEventType,
-)
-from friday_brain.contracts.tools import ToolPermission
 
 
 class GrantTaskPermissionRequest(BaseModel):
@@ -134,12 +133,3 @@ class AuthorizationEventResponse(BaseModel):
 
 class AuthorizationEventListResponse(BaseModel):
     events: list[AuthorizationEventResponse]
-
-
-from datetime import datetime
-from uuid import UUID
-
-from friday_brain.contracts.authorization import (
-    AuthorizationEventType,
-)
-from friday_brain.contracts.tools import ToolPermission

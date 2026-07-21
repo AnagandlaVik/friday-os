@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
+from structlog.contextvars import bound_contextvars
 
 from friday_brain.application.secure_tool_runtime import (
     ToolExecutionFailedError,
@@ -164,23 +165,27 @@ class DurableCheckpointRunner:
                 lease=lease,
             )
 
-            try:
-                output = await self._step_executor.execute_step(
-                    step=step,
-                    task=task,
-                    checkpoint_id=started.checkpoint_id,
-                    idempotency_key=started.idempotency_key,
-                )
-            except asyncio.CancelledError:
-                # Leave the checkpoint in executing state. A worker with a
-                # future valid lease can reclaim it using the same key.
-                raise
-            except Exception as exc:
-                return await self._record_failure(
-                    checkpoint=started,
-                    lease=lease,
-                    exception=exc,
-                )
+            with bound_contextvars(
+                checkpoint_id=str(started.checkpoint_id),
+                tool_name=step.operation,
+            ):
+                try:
+                    output = await self._step_executor.execute_step(
+                        step=step,
+                        task=task,
+                        checkpoint_id=started.checkpoint_id,
+                        idempotency_key=started.idempotency_key,
+                    )
+                except asyncio.CancelledError:
+                    # Leave the checkpoint in executing state. A worker with a
+                    # future valid lease can reclaim it using the same key.
+                    raise
+                except Exception as exc:
+                    return await self._record_failure(
+                        checkpoint=started,
+                        lease=lease,
+                        exception=exc,
+                    )
 
             completed = await self._plan_repository.complete_checkpoint(
                 checkpoint_id=started.checkpoint_id,
