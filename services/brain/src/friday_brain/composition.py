@@ -12,6 +12,9 @@ from friday_brain.protocols.execution_lease_repository import (
 from friday_brain.protocols.execution_plan_repository import (
     ExecutionPlanRepository,
 )
+from friday_brain.adapters.builtin_tools import (
+    create_builtin_tool_registry,
+)
 from friday_brain.adapters.deterministic_plan_validator import (
     DeterministicPlanValidator,
 )
@@ -41,6 +44,7 @@ from friday_brain.adapters.redis_state_store import RedisStateStore
 from friday_brain.application.outbox_publisher import OutboxPublisher
 from friday_brain.application.orchestrator import Orchestrator
 from friday_brain.application.recovery_worker import RecoveryWorker
+from friday_brain.application.tool_registry import ToolRegistry
 from friday_brain.config import Settings
 from friday_brain.protocols.event_bus import EventBus
 from friday_brain.protocols.outbox_repository import OutboxRepository
@@ -55,6 +59,7 @@ class CompositionRoot:
         self._tool_policy = ToolPolicy(
             allowed_operations=self.settings.allowed_operations
         )
+        self._tool_registry = create_builtin_tool_registry()
 
         # Authoritative task repository.
         if self.settings.brain_adapter_task_repository == "postgres":
@@ -149,9 +154,11 @@ class CompositionRoot:
         self._plan_validator = DeterministicPlanValidator(
             allowed_operations=self.settings.allowed_operations,
             max_steps=self.settings.max_plan_steps,
+            tool_registry=self._tool_registry,
         )
         self._tool_executor = PlaceholderToolExecutor(
-            tool_policy=self.get_tool_policy()
+            tool_policy=self.get_tool_policy(),
+            tool_registry=self.get_tool_registry(),
         )
 
         self._durable_processor: DurableTaskProcessor | None = None
@@ -204,6 +211,9 @@ class CompositionRoot:
 
     def get_tool_policy(self) -> ToolPolicy:
         return self._tool_policy
+
+    def get_tool_registry(self) -> ToolRegistry:
+        return self._tool_registry
 
     def get_task_repository(self) -> TaskRepository:
         return self._task_repository
