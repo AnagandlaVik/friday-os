@@ -1,6 +1,4 @@
-
-from uuid import uuid4, UUID
-from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -8,7 +6,7 @@ from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_404_NOT_FOUND,
     HTTP_409_CONFLICT,
-    HTTP_422_UNPROCESSABLE_ENTITY,
+    HTTP_422_UNPROCESSABLE_CONTENT,
     HTTP_500_INTERNAL_SERVER_ERROR,
 )
 
@@ -25,7 +23,7 @@ from friday_brain.contracts.errors import (
 
 async def brain_error_handler(request: Request, exc: BrainError) -> JSONResponse:
     correlation_id = getattr(request.state, "correlation_id", None)
-    
+
     status_code = HTTP_500_INTERNAL_SERVER_ERROR
     if isinstance(exc, TaskNotFoundError):
         status_code = HTTP_404_NOT_FOUND
@@ -34,7 +32,7 @@ async def brain_error_handler(request: Request, exc: BrainError) -> JSONResponse
     elif isinstance(exc, (InvalidPlanError, InvalidStateTransitionError)):
         status_code = HTTP_400_BAD_REQUEST
     elif isinstance(exc, ValidationError):
-        status_code = HTTP_422_UNPROCESSABLE_ENTITY
+        status_code = HTTP_422_UNPROCESSABLE_CONTENT
 
     error_model = ErrorResponse(
         code=exc.code,

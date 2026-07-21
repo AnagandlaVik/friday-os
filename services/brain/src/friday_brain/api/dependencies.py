@@ -4,11 +4,18 @@ from fastapi import Depends, Request
 
 from friday_brain.application.orchestrator import Orchestrator
 from friday_brain.composition import CompositionRoot
+
+
 def get_composition_root(http_request: Request) -> CompositionRoot:
     """
     FastAPI dependency to get the composition root from the app state.
     """
-    return http_request.app.state.composition_root
+    root: object = http_request.app.state.composition_root
+
+    if not isinstance(root, CompositionRoot):
+        raise RuntimeError("Application composition root is not configured")
+
+    return root
 
 
 def get_orchestrator(

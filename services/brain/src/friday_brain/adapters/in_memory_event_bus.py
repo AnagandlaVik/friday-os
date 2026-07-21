@@ -1,6 +1,5 @@
-
 import logging
-from typing import Callable, Awaitable, List, Any
+from typing import List, Any
 
 from friday_brain.contracts.events import Event
 from friday_brain.protocols.event_bus import Subscriber
@@ -43,4 +42,8 @@ class InMemoryEventBus:
             try:
                 await subscriber(event)
             except Exception:
-                logger.exception(f"Subscriber {subscriber} failed to handle event {event.event_id}")
+                logger.exception(
+                    "Subscriber %r failed to handle event %s",
+                    subscriber,
+                    event.event_id,
+                )

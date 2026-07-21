@@ -1,4 +1,3 @@
-
 import uuid
 
 from friday_brain.contracts.errors import InvalidPlanError

@@ -1,4 +1,3 @@
-
 import asyncio
 import uuid
 from typing import AsyncGenerator
@@ -9,37 +8,27 @@ from httpx import AsyncClient, ASGITransport
 from friday_brain.main import create_app
 from friday_brain.composition import CompositionRoot
 from friday_brain.config import settings
-from friday_brain.security.tool_policy import ToolPolicy
-from .fakes import ControllableToolExecutor
+from friday_brain.contracts.tasks import Task, TaskState
 
 
 @pytest.fixture
-async def client() -> AsyncGenerator[AsyncClient, None]:
+def composition_root() -> CompositionRoot:
+    return CompositionRoot(app_settings=settings)
+
+
+@pytest.fixture
+async def client(
+    composition_root: CompositionRoot,
+) -> AsyncGenerator[AsyncClient, None]:
     """
     Test client fixture that creates a new application instance
     for each test function.
     """
-    composition_root = CompositionRoot(app_settings=settings)
     app = create_app(composition_root)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as c:
         yield c
-
-
-@pytest.fixture
-async def controllable_client() -> AsyncGenerator[dict, None]:
-    """
-    Provides a client and a controllable executor for cancellation tests
-    that require pausing task execution.
-    """
-    composition_root = CompositionRoot(app_settings=settings)
-    tool_policy = ToolPolicy(allowed_operations=["echo"])
-    controllable_executor = ControllableToolExecutor(tool_policy=tool_policy)
-    composition_root._tool_executor = controllable_executor
-
-    app = create_app(composition_root)
-    
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        yield {"client": c, "executor": controllable_executor}
 
 
 @pytest.mark.asyncio
@@ -55,74 +44,164 @@ async def test_cancel_non_existent_task(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_cancel_completed_task(client: AsyncClient):
+async def test_cancel_completed_task(
+    client: AsyncClient, composition_root: CompositionRoot
+):
     """
     Ensures that requesting cancellation for a task that has already completed
     is a no-op and returns the task's final state.
     """
     create_response = await client.post("/api/v1/tasks", json={"input": "test"})
-    assert create_response.status_code == 202
+    assert create_response.status_code == 201
     task_id = create_response.json()["id"]
 
-    for _ in range(10):
+    for _ in range(50):
         get_response = await client.get(f"/api/v1/tasks/{task_id}")
         if get_response.json()["state"] == "completed":
             break
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.01)
 
     delete_response = await client.delete(f"/api/v1/tasks/{task_id}")
     assert delete_response.status_code == 200
-    
+
     final_task_data = delete_response.json()
     assert final_task_data["state"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_repeated_cancellation_requests(controllable_client):
+async def test_cancel_already_cancelled_task(
+    client: AsyncClient, composition_root: CompositionRoot
+):
     """
-    Tests that sending multiple cancellation requests for the same task
-    is handled gracefully while the task is executing.
-     """
-     client = controllable_client["client"]
-     executor = controllable_client["executor"]
+    Ensures that requesting cancellation for a task that is already CANCELLED
+    returns the cancelled state.
+    """
+    store = composition_root.get_state_store()
+    task = Task(input="test already cancelled")
+    task.state = TaskState.CANCELLED
+    await store.save(task)
 
-     # Start a task and wait for it to begin execution
-     create_response_task = asyncio.create_task(
-         client.post("/api/v1/tasks", json={"input": "test"})
-     )
-     print(f'{{"timestamp": {asyncio.get_event_loop().time()}, "task_id": "unknown", "state": "waiting_for_execution_start", "event": "before_wait_execution_started"}}')
-     await executor.execution_started.wait()
-     print(f'{{"timestamp": {asyncio.get_event_loop().time()}, "task_id": "unknown", "state": "waiting_for_execution_start", "event": "after_wait_execution_started"}}')
-     
-     # Now that execution is paused, get the task ID
-     create_response = await create_response_task
-     assert create_response.status_code == 202
-     task_id = create_response.json()["id"]
+    delete_response = await client.delete(f"/api/v1/tasks/{task.id}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["state"] == "cancelled"
 
-     # Wait until the task is in the EXECUTING state to ensure it's persisted
-     for _ in range(10):
-         get_response = await client.get(f"/api/v1/tasks/{task_id}")
-         if get_response.json()["state"] == "executing":
-             break
-         await asyncio.sleep(0.01)
-     else:
-         raise AssertionError("Task never reached executing state")
 
-    # Send multiple cancellation requests
-    responses = await asyncio.gather(
-        client.delete(f"/api/v1/tasks/{task_id}"),
-        client.delete(f"/api/v1/tasks/{task_id}"),
-        client.delete(f"/api/v1/tasks/{task_id}"),
+@pytest.mark.asyncio
+async def test_repeated_delete_requests_idempotent(
+    client: AsyncClient, composition_root: CompositionRoot
+):
+    """
+    Ensures that multiple DELETE requests to cancel a task are idempotent.
+    """
+    store = composition_root.get_state_store()
+    task = Task(input="test repeated delete")
+    task.state = TaskState.PENDING
+    await store.save(task)
+
+    delete_response1 = await client.delete(f"/api/v1/tasks/{task.id}")
+    assert delete_response1.status_code == 200
+    state1 = delete_response1.json()["state"]
+
+    delete_response2 = await client.delete(f"/api/v1/tasks/{task.id}")
+    assert delete_response2.status_code == 200
+    state2 = delete_response2.json()["state"]
+
+    assert state1 == state2
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_in_progress_cancellation():
+    """
+    Performs a direct application-level integration test of Orchestrator cancellation
+    using asyncio.Event coordination to prevent deadlocks and guarantee determinism.
+    """
+    from friday_brain.adapters.in_memory_state_store import InMemoryStateStore
+    from friday_brain.adapters.in_memory_event_bus import InMemoryEventBus
+    from friday_brain.adapters.placeholder_planner import PlaceholderPlanner
+    from friday_brain.adapters.deterministic_plan_validator import (
+        DeterministicPlanValidator,
+    )
+    from friday_brain.security.tool_policy import ToolPolicy
+    from friday_brain.application.orchestrator import Orchestrator
+    from friday_brain.contracts.api import CreateTaskRequest
+    from .fakes import ControllableToolExecutor
+
+    # Fresh instances
+    state_store = InMemoryStateStore()
+    event_bus = InMemoryEventBus()
+    planner = PlaceholderPlanner()
+    tool_policy = ToolPolicy(allowed_operations={"echo"})
+    plan_validator = DeterministicPlanValidator(
+        allowed_operations={"echo"},
+        max_steps=10,
+    )
+    tool_executor = ControllableToolExecutor(tool_policy=tool_policy)
+
+    orchestrator = Orchestrator(
+        state_store=state_store,
+        event_bus=event_bus,
+        planner=planner,
+        plan_validator=plan_validator,
+        tool_executor=tool_executor,
     )
 
-    # All requests should be successful
-    for response in responses:
-        assert response.status_code == 200
-        assert response.json()["state"] in ["cancellation_requested", "cancelled"]
-    
-    # Resume execution and let the task finish
-    executor.resume_execution.set()
-    await asyncio.sleep(0.1) # allow time for processing
-    
-    final_response = await client.get(f"/api/v1/tasks/{task_id}")
-    assert final_response.json()["state"] == "cancelled"
+    # Record published events
+    published_events = []
+    original_publish = event_bus.publish
+
+    async def recording_publish(event):
+        published_events.append(event)
+        await original_publish(event)
+
+    event_bus.publish = recording_publish
+
+    # 1. Start orchestration with asyncio.create_task
+    request = CreateTaskRequest(input="test cancellation flow")
+    task, created = await orchestrator.create_task(request, uuid.uuid4())
+    task_id = task.id
+
+    # Start task processing
+    processing_task = asyncio.create_task(orchestrator.process_task(task_id))
+
+    # 3. Wait until the executor signals that execution has started
+    await tool_executor.execution_started.wait()
+
+    # 4. Confirm the task state is executing
+    executing_task = await state_store.get(task_id)
+    assert executing_task is not None
+    assert executing_task.state == TaskState.EXECUTING
+
+    # 5. Request cancellation through the Orchestrator
+    cancel_task = await orchestrator.request_cancellation(task_id)
+
+    # 6. Confirm the task becomes cancellation_requested
+    assert cancel_task.state == TaskState.CANCELLATION_REQUESTED
+
+    # 7. Request cancellation again and verify it is idempotent
+    cancel_task_repeat = await orchestrator.request_cancellation(task_id)
+    assert cancel_task_repeat.state == TaskState.CANCELLATION_REQUESTED
+
+    # 8. Release the executor at the safe cancellation boundary
+    tool_executor.resume_execution.set()
+
+    # 9. Await orchestration completion
+    await processing_task
+
+    # 10. Confirm the final state is cancelled
+    final_task = await state_store.get(task_id)
+    assert final_task is not None
+    assert final_task.state == TaskState.CANCELLED
+
+    # 11. Confirm exactly one task.cancellation_requested event
+    cancellation_requested_events = [
+        e for e in published_events if e.event_type == "task.cancellation_requested"
+    ]
+    assert len(cancellation_requested_events) == 1
+
+    # 12. Confirm exactly one task.cancelled event
+    cancelled_events = [e for e in published_events if e.event_type == "task.cancelled"]
+    assert len(cancelled_events) == 1
+
+    # 13. Confirm the task never transitions to completed
+    completed_events = [e for e in published_events if e.event_type == "task.completed"]
+    assert len(completed_events) == 0

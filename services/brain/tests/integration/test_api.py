@@ -1,4 +1,3 @@
-
 from typing import AsyncGenerator
 import pytest
 from httpx import AsyncClient, ASGITransport
@@ -11,14 +10,22 @@ from friday_brain.config import settings
 
 
 @pytest.fixture
-async def client() -> AsyncGenerator[AsyncClient, None]:
+def composition_root() -> CompositionRoot:
+    return CompositionRoot(app_settings=settings)
+
+
+@pytest.fixture
+async def client(
+    composition_root: CompositionRoot,
+) -> AsyncGenerator[AsyncClient, None]:
     """
     Test client fixture that creates a new application instance
     for each test function.
     """
-    composition_root = CompositionRoot(app_settings=settings)
     app = create_app(composition_root)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as c:
         yield c
 
 
@@ -32,7 +39,7 @@ async def test_health_check(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_full_task_lifecycle(client: AsyncClient):
     create_response = await client.post("/api/v1/tasks", json={"input": "hello world"})
-    assert create_response.status_code == 202
+    assert create_response.status_code == 201
     task_data = create_response.json()
     task_id = task_data["id"]
     assert task_data["state"] == "pending"
@@ -43,7 +50,7 @@ async def test_full_task_lifecycle(client: AsyncClient):
         if get_response.json()["state"] == "completed":
             break
         await asyncio.sleep(0.1)
-    
+
     final_task_data = get_response.json()
     assert final_task_data["state"] == "completed"
     assert final_task_data["result"] == "Echo: hello world"
@@ -57,14 +64,15 @@ async def test_task_not_found(client: AsyncClient):
     error_data = response.json()
     assert error_data["code"] == "task_not_found"
 
+
 @pytest.mark.asyncio
 async def test_idempotency_api_success(client: AsyncClient):
     key = str(uuid.uuid4())
     headers = {"Idempotency-Key": key}
     json_payload = {"input": "idempotent test"}
-    
+
     response1 = await client.post("/api/v1/tasks", json=json_payload, headers=headers)
-    assert response1.status_code == 202
+    assert response1.status_code == 201
     task_id1 = response1.json()["id"]
 
     response2 = await client.post("/api/v1/tasks", json=json_payload, headers=headers)
@@ -73,14 +81,19 @@ async def test_idempotency_api_success(client: AsyncClient):
 
     assert task_id1 == task_id2
 
+
 @pytest.mark.asyncio
 async def test_idempotency_api_conflict(client: AsyncClient):
     key = str(uuid.uuid4())
     headers = {"Idempotency-Key": key}
-    
-    response1 = await client.post("/api/v1/tasks", json={"input": "one"}, headers=headers)
-    assert response1.status_code == 202
-    
-    response2 = await client.post("/api/v1/tasks", json={"input": "two"}, headers=headers)
+
+    response1 = await client.post(
+        "/api/v1/tasks", json={"input": "one"}, headers=headers
+    )
+    assert response1.status_code == 201
+
+    response2 = await client.post(
+        "/api/v1/tasks", json={"input": "two"}, headers=headers
+    )
     assert response2.status_code == 409
     assert response2.json()["code"] == "idempotency_conflict"

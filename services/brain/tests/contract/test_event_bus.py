@@ -20,9 +20,54 @@ class EventBusContract:
             payload=TaskCreatedPayload(input="test", state="pending"),
         )
 
-        # This test can only check that publish doesn't raise an exception.
-        # Verification of delivery would require subscribers or inspecting the bus state.
         try:
             await event_bus.publish(event)
         except Exception as e:
             pytest.fail(f"EventBus.publish() raised an exception: {e}")
+
+    @pytest.mark.asyncio
+    async def test_multiple_subscribers(self, event_bus: EventBus):
+        event = Event(
+            event_type="task.created",
+            task_id=uuid.uuid4(),
+            payload=TaskCreatedPayload(input="test", state="pending"),
+        )
+
+        subscriber1_called = False
+        subscriber2_called = False
+
+        async def subscriber1(e: Event):
+            nonlocal subscriber1_called
+            subscriber1_called = True
+
+        async def subscriber2(e: Event):
+            nonlocal subscriber2_called
+            subscriber2_called = True
+
+        event_bus.subscribe(subscriber1)
+        event_bus.subscribe(subscriber2)
+
+        await event_bus.publish(event)
+
+        assert subscriber1_called
+        assert subscriber2_called
+
+    @pytest.mark.asyncio
+    async def test_subscriber_failure(self, event_bus: EventBus):
+        event = Event(
+            event_type="task.created",
+            task_id=uuid.uuid4(),
+            payload=TaskCreatedPayload(input="test", state="pending"),
+        )
+
+        async def failing_subscriber(e: Event):
+            raise ValueError("Test failure")
+
+        event_bus.subscribe(failing_subscriber)
+
+        try:
+            await event_bus.publish(event)
+        except Exception as e:
+            pytest.fail(
+                f"EventBus.publish() should not raise on subscriber failure: {e}"
+            )

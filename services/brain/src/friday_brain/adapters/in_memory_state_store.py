@@ -1,4 +1,3 @@
-
 import asyncio
 import uuid
 from typing import Dict
@@ -23,14 +22,18 @@ class InMemoryStateStore:
         self._idempotency_keys.clear()
 
     async def save(self, task: Task) -> None:
-        print(f'{{"timestamp": {__import__("time").time()}, "task_id": "{task.id}", "state": "{task.state}", "event": "before_state_store_save"}}')
+        print(
+            f'{{"timestamp": {__import__("time").time()}, "task_id": "{task.id}", "state": "{task.state}", "event": "before_state_store_save"}}'
+        )
         async with self._lock:
             # Store a copy to prevent mutation outside the store
             task_copy = task.model_copy(deep=True)
             self._tasks[task_copy.id] = task_copy
             if task_copy.idempotency_key:
                 self._idempotency_keys[task_copy.idempotency_key] = task_copy.id
-        print(f'{{"timestamp": {__import__("time").time()}, "task_id": "{task.id}", "state": "{task.state}", "event": "after_state_store_save"}}')
+        print(
+            f'{{"timestamp": {__import__("time").time()}, "task_id": "{task.id}", "state": "{task.state}", "event": "after_state_store_save"}}'
+        )
 
     async def get(self, task_id: uuid.UUID) -> Task | None:
         async with self._lock:

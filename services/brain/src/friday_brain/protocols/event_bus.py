@@ -1,4 +1,3 @@
-
 from typing import Protocol, Callable, Awaitable, Any
 
 from friday_brain.contracts.events import Event

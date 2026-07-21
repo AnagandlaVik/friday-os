@@ -1,5 +1,4 @@
 import uuid
-import time
 
 from fastapi import APIRouter, Depends, status, Header
 from fastapi.responses import JSONResponse
@@ -73,7 +72,11 @@ async def cancel_task(
     """
     Requests the cancellation of a running task.
     """
-    print(f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "unknown", "event": "before_request_cancellation"}}')
+    print(
+        f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "unknown", "event": "before_request_cancellation"}}'
+    )
     task = await orchestrator.request_cancellation(task_id)
-    print(f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "{task.state}", "event": "after_request_cancellation"}}')
+    print(
+        f'{{"timestamp": {__import__("time").time()}, "task_id": "{task_id}", "state": "{task.state}", "event": "after_request_cancellation"}}'
+    )
     return JSONResponse(content=task.model_dump(mode="json"))

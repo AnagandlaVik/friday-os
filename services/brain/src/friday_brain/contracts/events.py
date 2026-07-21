@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from .tasks import TaskState
 
@@ -58,3 +58,9 @@ class TaskFailedPayload(BaseModel):
 
 class TaskCancelledPayload(BaseModel):
     pass
+
+
+class EmptyEventPayload(BaseModel):
+    """Payload for lifecycle events that carry no additional data."""
+
+    model_config = ConfigDict(extra="forbid")

@@ -1,4 +1,3 @@
-
 import asyncio
 import uuid
 import pytest
@@ -9,7 +8,9 @@ from friday_brain.contracts.tasks import TaskState
 from friday_brain.adapters.in_memory_state_store import InMemoryStateStore
 from friday_brain.adapters.in_memory_event_bus import InMemoryEventBus
 from friday_brain.adapters.placeholder_planner import PlaceholderPlanner
-from friday_brain.adapters.deterministic_plan_validator import DeterministicPlanValidator
+from friday_brain.adapters.deterministic_plan_validator import (
+    DeterministicPlanValidator,
+)
 from friday_brain.config import settings
 
 from friday_brain.security.tool_policy import ToolPolicy
@@ -29,8 +30,10 @@ def controllable_orchestrator():
         allowed_operations=settings.allowed_operations,
         max_steps=settings.max_plan_steps,
     )
-    tool_executor = ControllableToolExecutor(tool_policy=ToolPolicy(allowed_operations=["echo"]))
-    
+    tool_executor = ControllableToolExecutor(
+        tool_policy=ToolPolicy(allowed_operations=["echo"])
+    )
+
     orchestrator = Orchestrator(
         state_store=state_store,
         event_bus=event_bus,
@@ -38,7 +41,7 @@ def controllable_orchestrator():
         plan_validator=plan_validator,
         tool_executor=tool_executor,
     )
-    
+
     return orchestrator, state_store, event_bus, tool_executor
 
 
@@ -53,7 +56,7 @@ async def test_cancellation_during_execution_app_level(controllable_orchestrator
     # 1. Start orchestration in an asyncio task
     request = CreateTaskRequest(input="long running task")
     task, _ = await orchestrator.create_task(request, uuid.uuid4())
-    
+
     processing_task = asyncio.create_task(orchestrator.process_task(task.id))
 
     # 2. Wait until the executor signals that execution has started

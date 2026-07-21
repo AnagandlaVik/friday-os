@@ -1,18 +1,21 @@
-
-from friday_brain.adapters.deterministic_plan_validator import DeterministicPlanValidator
+from friday_brain.adapters.deterministic_plan_validator import (
+    DeterministicPlanValidator,
+)
 from friday_brain.adapters.in_memory_event_bus import InMemoryEventBus
 from friday_brain.adapters.in_memory_state_store import InMemoryStateStore
 from friday_brain.adapters.placeholder_planner import PlaceholderPlanner
 from friday_brain.adapters.placeholder_tool_executor import PlaceholderToolExecutor
 from friday_brain.application.orchestrator import Orchestrator
-from friday_brain.config import settings, Settings
+from friday_brain.config import Settings
 from friday_brain.security.tool_policy import ToolPolicy
 
 
 class CompositionRoot:
     def __init__(self, app_settings: Settings) -> None:
         self.settings = app_settings
-        self._tool_policy = ToolPolicy(allowed_operations=self.settings.allowed_operations)
+        self._tool_policy = ToolPolicy(
+            allowed_operations=self.settings.allowed_operations
+        )
         self._state_store = InMemoryStateStore()
         self._event_bus = InMemoryEventBus()
         self._planner = PlaceholderPlanner()
@@ -20,7 +23,9 @@ class CompositionRoot:
             allowed_operations=self.settings.allowed_operations,
             max_steps=self.settings.max_plan_steps,
         )
-        self._tool_executor = PlaceholderToolExecutor(tool_policy=self.get_tool_policy())
+        self._tool_executor = PlaceholderToolExecutor(
+            tool_policy=self.get_tool_policy()
+        )
         self._orchestrator = Orchestrator(
             state_store=self.get_state_store(),
             event_bus=self.get_event_bus(),
