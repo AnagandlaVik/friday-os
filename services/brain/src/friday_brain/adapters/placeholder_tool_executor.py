@@ -1,30 +1,37 @@
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
+from friday_brain.adapters.builtin_tool_handlers import (
+    create_builtin_tool_handlers,
+)
 from friday_brain.adapters.builtin_tools import (
-    EchoInput,
-    EchoOutput,
     create_builtin_tool_registry,
+)
+from friday_brain.application.secure_tool_runtime import (
+    SecureToolRuntime,
+    ToolExecutionFailedError,
 )
 from friday_brain.application.tool_registry import ToolRegistry
 from friday_brain.contracts.errors import ToolNotAllowedError
 from friday_brain.contracts.plans import Plan, PlanStep
 from friday_brain.contracts.tasks import Task
+from friday_brain.contracts.tools import ToolInvocation
 from friday_brain.security.tool_policy import ToolPolicy
 
 
 class PlaceholderToolExecutor:
     """
-    Harmless registry-backed tool executor.
+    Registry-backed compatibility adapter for secure tool execution.
 
-    The complete-plan method remains available for compatibility while
-    durable execution uses the single-step boundary.
+    Durable execution calls execute_step. The complete-plan method remains
+    available for the legacy in-memory orchestrator.
     """
 
     def __init__(
         self,
         tool_policy: ToolPolicy,
         tool_registry: ToolRegistry | None = None,
+        secure_runtime: SecureToolRuntime | None = None,
     ) -> None:
         self._tool_policy = tool_policy
         self._tool_registry = (
@@ -32,55 +39,56 @@ class PlaceholderToolExecutor:
             if tool_registry is not None
             else create_builtin_tool_registry()
         )
+        self._secure_runtime = (
+            secure_runtime
+            if secure_runtime is not None
+            else SecureToolRuntime(
+                registry=self._tool_registry,
+                handlers=create_builtin_tool_handlers(),
+            )
+        )
 
     async def execute_step(
         self,
         step: PlanStep,
         task: Task,
+        checkpoint_id: UUID,
         idempotency_key: str,
     ) -> Any:
-        del task
-        del idempotency_key
-
         if not self._tool_policy.is_allowed(step.operation):
             raise ToolNotAllowedError(step.operation)
 
-        definition = self._tool_registry.validate_access(step.operation)
-        validated_input = self._tool_registry.validate_arguments(
-            step.operation,
-            step.arguments,
+        definition = self._tool_registry.get(step.operation)
+
+        result = await self._secure_runtime.execute(
+            ToolInvocation(
+                tool_name=step.operation,
+                arguments=step.arguments,
+                idempotency_key=idempotency_key,
+                task_id=task.id,
+                checkpoint_id=checkpoint_id,
+            )
         )
 
-        if step.operation == "echo":
-            if not isinstance(
-                validated_input,
-                EchoInput,
-            ):
-                raise TypeError(
-                    "Echo arguments were validated with an unexpected schema."
+        if not result.success:
+            if result.error is None:
+                raise RuntimeError(
+                    "Secure runtime returned a failed result without an error."
                 )
 
-            raw_result = f"Echo: {validated_input.message}"
-
-            if definition.output_model is None:
-                return raw_result
-
-            validated_output = definition.output_model.model_validate(
-                {"result": raw_result}
+            raise ToolExecutionFailedError(
+                error=result.error,
+                max_attempts=(definition.retry_policy.max_attempts),
+                base_delay_sec=(definition.retry_policy.base_delay_sec),
+                max_delay_sec=(definition.retry_policy.max_delay_sec),
             )
 
-            if not isinstance(
-                validated_output,
-                EchoOutput,
-            ):
-                raise TypeError("Echo output was validated with an unexpected schema.")
+        # Preserve the original echo result shape while the legacy API
+        # still expects a string rather than a structured result object.
+        if step.operation == "echo" and isinstance(result.output, dict):
+            return result.output.get("result")
 
-            return validated_output.result
-
-        raise NotImplementedError(
-            f"Operation '{step.operation}' is not implemented "
-            "by the placeholder executor."
-        )
+        return result.output
 
     async def execute_plan(
         self,
@@ -91,10 +99,16 @@ class PlaceholderToolExecutor:
         final_result: Any = None
 
         for step_index, step in enumerate(sorted_steps):
+            idempotency_key = f"legacy:{task.id}:{plan.id}:{step_index}"
+
             final_result = await self.execute_step(
                 step=step,
                 task=task,
-                idempotency_key=(f"legacy:{task.id}:{plan.id}:{step_index}"),
+                checkpoint_id=uuid5(
+                    NAMESPACE_URL,
+                    idempotency_key,
+                ),
+                idempotency_key=idempotency_key,
             )
 
         return final_result

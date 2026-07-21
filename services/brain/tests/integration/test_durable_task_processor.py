@@ -65,6 +65,7 @@ class RecordingStepExecutor:
         self,
         step: PlanStep,
         task: Task,
+        checkpoint_id: UUID,
         idempotency_key: str,
     ) -> Any:
         del task

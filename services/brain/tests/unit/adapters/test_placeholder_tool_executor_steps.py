@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 
 from friday_brain.adapters.placeholder_tool_executor import (
@@ -27,6 +29,7 @@ async def test_execute_single_step(
     result = await executor.execute_step(
         step=step,
         task=task,
+        checkpoint_id=uuid4(),
         idempotency_key="stable-key",
     )
 
@@ -45,6 +48,7 @@ async def test_execute_step_rejects_disallowed_operation() -> None:
         await executor.execute_step(
             step=step,
             task=task,
+            checkpoint_id=uuid4(),
             idempotency_key="stable-key",
         )
 

@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
+from friday_brain.application.secure_tool_runtime import (
+    ToolExecutionFailedError,
+)
 from friday_brain.contracts.tasks import Task
 from friday_brain.protocols.execution_lease_repository import (
     ExecutionLease,
@@ -165,6 +168,7 @@ class DurableCheckpointRunner:
                 output = await self._step_executor.execute_step(
                     step=step,
                     task=task,
+                    checkpoint_id=started.checkpoint_id,
                     idempotency_key=started.idempotency_key,
                 )
             except asyncio.CancelledError:
@@ -222,17 +226,53 @@ class DurableCheckpointRunner:
         lease: ExecutionLease,
         exception: Exception,
     ) -> CheckpointRunResult:
+        retryable = True
+        max_attempts = self._max_attempts
+        retry_delay_sec = self._retry_delay_sec
+        error_code = type(exception).__name__
+        error_details: dict[str, Any] | None = None
+
+        if isinstance(
+            exception,
+            ToolExecutionFailedError,
+        ):
+            retryable = exception.retryable
+            max_attempts = min(
+                self._max_attempts,
+                exception.max_attempts,
+            )
+            error_code = exception.code
+            error_details = exception.details
+
+            if exception.base_delay_sec > 0:
+                retry_delay_sec = exception.base_delay_sec * (
+                    2
+                    ** max(
+                        checkpoint.attempt_count - 1,
+                        0,
+                    )
+                )
+
+                if exception.max_delay_sec > 0:
+                    retry_delay_sec = min(
+                        retry_delay_sec,
+                        exception.max_delay_sec,
+                    )
+
         error = {
             "type": type(exception).__name__,
+            "code": error_code,
             "message": str(exception),
+            "retryable": retryable,
+            "details": error_details,
         }
 
-        if checkpoint.attempt_count < self._max_attempts:
+        if retryable and checkpoint.attempt_count < max_attempts:
             retrying = await self._plan_repository.schedule_checkpoint_retry(
                 checkpoint_id=checkpoint.checkpoint_id,
                 lease_token=lease.lease_token,
                 error=error,
-                retry_delay_sec=self._retry_delay_sec,
+                retry_delay_sec=retry_delay_sec,
             )
 
             if retrying is None:
@@ -243,7 +283,7 @@ class DurableCheckpointRunner:
 
             return CheckpointRunResult(
                 status="waiting_retry",
-                retry_available_at=retrying.retry_available_at,
+                retry_available_at=(retrying.retry_available_at),
             )
 
         failed = await self._plan_repository.fail_checkpoint(
