@@ -13,6 +13,14 @@ class EventBusContract:
         raise NotImplementedError
 
     @pytest.mark.asyncio
+    async def test_lifecycle(self, event_bus: EventBus):
+        try:
+            await event_bus.start()
+            await event_bus.stop()
+        except Exception as e:
+            pytest.fail(f"EventBus lifecycle (start/stop) failed with error: {e}")
+
+    @pytest.mark.asyncio
     async def test_publish_event(self, event_bus: EventBus):
         event = Event(
             event_type="task.created",
