@@ -1,3 +1,4 @@
+from pathlib import Path
 from uuid import uuid4
 
 from friday_brain.application.durable_checkpoint_runner import (
@@ -68,6 +69,9 @@ from friday_brain.protocols.task_repository import TaskRepository
 from friday_brain.protocols.tool_invocation_repository import (
     ToolInvocationRepository,
 )
+from friday_brain.security.filesystem_sandbox import (
+    FilesystemSandbox,
+)
 from friday_brain.security.tool_policy import ToolPolicy
 
 
@@ -78,6 +82,24 @@ class CompositionRoot:
             allowed_operations=self.settings.allowed_operations
         )
         self._tool_registry = create_builtin_tool_registry()
+        self._filesystem_sandbox: FilesystemSandbox | None = None
+
+        if self.settings.filesystem_tools_enabled:
+            sandbox_root = Path(self.settings.filesystem_sandbox_root).expanduser()
+            sandbox_root.mkdir(
+                mode=0o700,
+                parents=True,
+                exist_ok=True,
+            )
+            sandbox_root.chmod(0o700)
+
+            self._filesystem_sandbox = FilesystemSandbox(
+                sandbox_root,
+                max_read_bytes=(self.settings.filesystem_max_read_bytes),
+                max_write_bytes=(self.settings.filesystem_max_write_bytes),
+                max_directory_entries=(self.settings.filesystem_max_directory_entries),
+            )
+
         self._worker_id = f"brain-{uuid4()}"
 
         # Authoritative task repository.
@@ -199,7 +221,7 @@ class CompositionRoot:
         )
         self._secure_tool_runtime = SecureToolRuntime(
             registry=self._tool_registry,
-            handlers=create_builtin_tool_handlers(),
+            handlers=create_builtin_tool_handlers(self._filesystem_sandbox),
             invocation_repository=(self._tool_invocation_repository),
             authorization_repository=(self._authorization_repository),
             worker_id=self._worker_id,
@@ -263,6 +285,11 @@ class CompositionRoot:
             tool_executor=self.get_tool_executor(),
             durable_processor=self._durable_processor,
         )
+
+    def get_filesystem_sandbox(
+        self,
+    ) -> FilesystemSandbox | None:
+        return self._filesystem_sandbox
 
     def get_tool_policy(self) -> ToolPolicy:
         return self._tool_policy

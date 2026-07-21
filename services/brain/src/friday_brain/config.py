@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     tool_invocation_reservation_duration_sec: float = 30.0
     tool_invocation_heartbeat_interval_sec: float = 10.0
 
+    # Sandboxed filesystem tools
+    filesystem_tools_enabled: bool = False
+    filesystem_sandbox_root: str = "./data/filesystem-sandbox"
+    filesystem_max_read_bytes: int = 1_000_000
+    filesystem_max_write_bytes: int = 1_000_000
+    filesystem_max_directory_entries: int = 1_000
+
     # Adapter Configuration
     brain_adapter_task_repository: str = "in_memory"
     brain_adapter_state_store: str = "in_memory"
