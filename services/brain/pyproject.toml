@@ -9,6 +9,7 @@ dependencies = [
     "pydantic-settings",
     "structlog",
     "uvicorn[standard]",
+    "redis",
 ]
 
 [project.optional-dependencies]
