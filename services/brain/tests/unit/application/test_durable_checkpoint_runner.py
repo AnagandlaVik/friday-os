@@ -221,6 +221,7 @@ class RecordingStepExecutor:
         task: Task,
         checkpoint_id: UUID,
         idempotency_key: str,
+        lease_token: UUID | None = None,
     ) -> Any:
         del task
         self.calls.append((step.id, idempotency_key))
@@ -470,6 +471,7 @@ async def test_nonretryable_tool_failure_fails_immediately() -> None:
             task: Task,
             checkpoint_id: UUID,
             idempotency_key: str,
+            lease_token: UUID | None = None,
         ) -> Any:
             del step
             del task

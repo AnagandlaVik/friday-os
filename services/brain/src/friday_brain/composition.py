@@ -12,6 +12,9 @@ from friday_brain.protocols.execution_lease_repository import (
 from friday_brain.protocols.execution_plan_repository import (
     ExecutionPlanRepository,
 )
+from friday_brain.adapters.builtin_tool_handlers import (
+    create_builtin_tool_handlers,
+)
 from friday_brain.adapters.builtin_tools import (
     create_builtin_tool_registry,
 )
@@ -40,16 +43,25 @@ from friday_brain.adapters.postgres_outbox_repository import (
 from friday_brain.adapters.postgres_task_repository import (
     PostgresTaskRepository,
 )
+from friday_brain.adapters.postgres_tool_invocation_repository import (
+    PostgresToolInvocationRepository,
+)
 from friday_brain.adapters.redis_state_store import RedisStateStore
 from friday_brain.application.outbox_publisher import OutboxPublisher
 from friday_brain.application.orchestrator import Orchestrator
 from friday_brain.application.recovery_worker import RecoveryWorker
+from friday_brain.application.secure_tool_runtime import (
+    SecureToolRuntime,
+)
 from friday_brain.application.tool_registry import ToolRegistry
 from friday_brain.config import Settings
 from friday_brain.protocols.event_bus import EventBus
 from friday_brain.protocols.outbox_repository import OutboxRepository
 from friday_brain.protocols.state_store import StateStore
 from friday_brain.protocols.task_repository import TaskRepository
+from friday_brain.protocols.tool_invocation_repository import (
+    ToolInvocationRepository,
+)
 from friday_brain.security.tool_policy import ToolPolicy
 
 
@@ -60,6 +72,7 @@ class CompositionRoot:
             allowed_operations=self.settings.allowed_operations
         )
         self._tool_registry = create_builtin_tool_registry()
+        self._worker_id = f"brain-{uuid4()}"
 
         # Authoritative task repository.
         if self.settings.brain_adapter_task_repository == "postgres":
@@ -86,6 +99,17 @@ class CompositionRoot:
                 command_timeout=(self.settings.postgres_command_timeout_sec),
             )
             self._execution_plan_repository = PostgresExecutionPlanRepository(
+                postgres_url=self.settings.postgres_url,
+                pool_size=self.settings.postgres_pool_size,
+                max_overflow=self.settings.postgres_max_overflow,
+                pool_timeout=(self.settings.postgres_pool_timeout_sec),
+                command_timeout=(self.settings.postgres_command_timeout_sec),
+            )
+
+        self._tool_invocation_repository: ToolInvocationRepository | None = None
+
+        if self.settings.brain_adapter_task_repository == "postgres":
+            self._tool_invocation_repository = PostgresToolInvocationRepository(
                 postgres_url=self.settings.postgres_url,
                 pool_size=self.settings.postgres_pool_size,
                 max_overflow=self.settings.postgres_max_overflow,
@@ -156,9 +180,22 @@ class CompositionRoot:
             max_steps=self.settings.max_plan_steps,
             tool_registry=self._tool_registry,
         )
+        self._secure_tool_runtime = SecureToolRuntime(
+            registry=self._tool_registry,
+            handlers=create_builtin_tool_handlers(),
+            invocation_repository=(self._tool_invocation_repository),
+            worker_id=self._worker_id,
+            reservation_duration_sec=(
+                self.settings.tool_invocation_reservation_duration_sec
+            ),
+            heartbeat_interval_sec=(
+                self.settings.tool_invocation_heartbeat_interval_sec
+            ),
+        )
         self._tool_executor = PlaceholderToolExecutor(
             tool_policy=self.get_tool_policy(),
             tool_registry=self.get_tool_registry(),
+            secure_runtime=self._secure_tool_runtime,
         )
 
         self._durable_processor: DurableTaskProcessor | None = None
@@ -181,7 +218,7 @@ class CompositionRoot:
                 planner=self._planner,
                 plan_validator=self._plan_validator,
                 checkpoint_runner=checkpoint_runner,
-                worker_id=f"brain-{uuid4()}",
+                worker_id=self._worker_id,
                 lease_duration_sec=(self.settings.execution_lease_duration_sec),
                 heartbeat_interval_sec=(self.settings.execution_heartbeat_interval_sec),
             )
@@ -217,6 +254,11 @@ class CompositionRoot:
 
     def get_task_repository(self) -> TaskRepository:
         return self._task_repository
+
+    def get_tool_invocation_repository(
+        self,
+    ) -> ToolInvocationRepository | None:
+        return self._tool_invocation_repository
 
     def get_outbox_repository(
         self,

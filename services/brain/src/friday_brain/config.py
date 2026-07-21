@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     recovery_batch_size: int = 100
     recovery_max_concurrency: int = 4
 
+    # Durable tool invocation ledger
+    tool_invocation_reservation_duration_sec: float = 30.0
+    tool_invocation_heartbeat_interval_sec: float = 10.0
+
     # Adapter Configuration
     brain_adapter_task_repository: str = "in_memory"
     brain_adapter_state_store: str = "in_memory"
