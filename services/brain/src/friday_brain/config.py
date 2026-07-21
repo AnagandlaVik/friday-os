@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # For Milestone 1, only the harmless 'echo' operation is allowed.
     allowed_operations: set[str] = {"echo"}
 
+    # Durable execution settings
+    execution_lease_duration_sec: float = 30.0
+    execution_heartbeat_interval_sec: float = 10.0
+    execution_max_attempts: int = 3
+    execution_retry_delay_sec: float = 1.0
+
     # Adapter Configuration
     brain_adapter_task_repository: str = "in_memory"
     brain_adapter_state_store: str = "in_memory"

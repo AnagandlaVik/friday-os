@@ -1,3 +1,17 @@
+from uuid import uuid4
+
+from friday_brain.application.durable_checkpoint_runner import (
+    DurableCheckpointRunner,
+)
+from friday_brain.application.durable_task_processor import (
+    DurableTaskProcessor,
+)
+from friday_brain.protocols.execution_lease_repository import (
+    ExecutionLeaseRepository,
+)
+from friday_brain.protocols.execution_plan_repository import (
+    ExecutionPlanRepository,
+)
 from friday_brain.adapters.deterministic_plan_validator import (
     DeterministicPlanValidator,
 )
@@ -10,6 +24,12 @@ from friday_brain.adapters.jetstream_event_bus import JetStreamEventBus
 from friday_brain.adapters.placeholder_planner import PlaceholderPlanner
 from friday_brain.adapters.placeholder_tool_executor import (
     PlaceholderToolExecutor,
+)
+from friday_brain.adapters.postgres_execution_lease_repository import (
+    PostgresExecutionLeaseRepository,
+)
+from friday_brain.adapters.postgres_execution_plan_repository import (
+    PostgresExecutionPlanRepository,
 )
 from friday_brain.adapters.postgres_outbox_repository import (
     PostgresOutboxRepository,
@@ -47,6 +67,25 @@ class CompositionRoot:
             )
         else:
             self._task_repository = InMemoryTaskRepository()
+
+        self._execution_lease_repository: ExecutionLeaseRepository | None = None
+        self._execution_plan_repository: ExecutionPlanRepository | None = None
+
+        if self.settings.brain_adapter_task_repository == "postgres":
+            self._execution_lease_repository = PostgresExecutionLeaseRepository(
+                postgres_url=self.settings.postgres_url,
+                pool_size=self.settings.postgres_pool_size,
+                max_overflow=self.settings.postgres_max_overflow,
+                pool_timeout=(self.settings.postgres_pool_timeout_sec),
+                command_timeout=(self.settings.postgres_command_timeout_sec),
+            )
+            self._execution_plan_repository = PostgresExecutionPlanRepository(
+                postgres_url=self.settings.postgres_url,
+                pool_size=self.settings.postgres_pool_size,
+                max_overflow=self.settings.postgres_max_overflow,
+                pool_timeout=(self.settings.postgres_pool_timeout_sec),
+                command_timeout=(self.settings.postgres_command_timeout_sec),
+            )
 
         self._outbox_repository: OutboxRepository | None = None
 
@@ -114,11 +153,37 @@ class CompositionRoot:
             tool_policy=self.get_tool_policy()
         )
 
+        self._durable_processor: DurableTaskProcessor | None = None
+
+        if (
+            self._execution_lease_repository is not None
+            and self._execution_plan_repository is not None
+        ):
+            checkpoint_runner = DurableCheckpointRunner(
+                plan_repository=self._execution_plan_repository,
+                step_executor=self._tool_executor,
+                max_attempts=self.settings.execution_max_attempts,
+                retry_delay_sec=(self.settings.execution_retry_delay_sec),
+            )
+
+            self._durable_processor = DurableTaskProcessor(
+                task_repository=self._task_repository,
+                lease_repository=(self._execution_lease_repository),
+                plan_repository=(self._execution_plan_repository),
+                planner=self._planner,
+                plan_validator=self._plan_validator,
+                checkpoint_runner=checkpoint_runner,
+                worker_id=f"brain-{uuid4()}",
+                lease_duration_sec=(self.settings.execution_lease_duration_sec),
+                heartbeat_interval_sec=(self.settings.execution_heartbeat_interval_sec),
+            )
+
         self._orchestrator = Orchestrator(
             task_repository=self.get_task_repository(),
             planner=self.get_planner(),
             plan_validator=self.get_plan_validator(),
             tool_executor=self.get_tool_executor(),
+            durable_processor=self._durable_processor,
         )
 
     def get_tool_policy(self) -> ToolPolicy:
@@ -136,6 +201,21 @@ class CompositionRoot:
         self,
     ) -> OutboxPublisher | None:
         return self._outbox_publisher
+
+    def get_execution_lease_repository(
+        self,
+    ) -> ExecutionLeaseRepository | None:
+        return self._execution_lease_repository
+
+    def get_execution_plan_repository(
+        self,
+    ) -> ExecutionPlanRepository | None:
+        return self._execution_plan_repository
+
+    def get_durable_processor(
+        self,
+    ) -> DurableTaskProcessor | None:
+        return self._durable_processor
 
     def get_state_store(self) -> StateStore:
         return self._state_store
