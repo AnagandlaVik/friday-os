@@ -395,24 +395,30 @@ These tests operate in a test environment with real Redis and NATS containers ru
 
 ## 17. Definition of Done
 
-- [ ] Extended `StateStore` and `EventBus` protocols with `start()` and `stop()` lifecycle hooks.
-- [ ] Updated and verified existing in-memory adapters with the new protocol interfaces.
-- [ ] Added `RedisStateStore` with JSON serialization, 7-day TTL, and optimistic concurrency.
-- [ ] Added `JetStreamEventBus` supporting explicit ACKs, pull consumers, and max-delivery failed-event handling.
-- [ ] Extended the contract tests to cover Redis and NATS JetStream adapters using real infrastructure.
-- [ ] Added Docker Compose file with localized port mapping and robust health checks.
-- [ ] Wired adapter lifespans to FastAPI startup and shutdown.
-- [ ] Added `/ready` endpoint for dependency-aware health checks.
-- [ ] Verified linting (`ruff`), formatting, and static typing (`mypy`) all report zero errors.
+- [x] Extended `StateStore` and `EventBus` protocols with `start()`, `stop()`, and `is_healthy()` lifecycle hooks.
+- [x] Updated and verified existing in-memory adapters with the new protocol interfaces.
+- [x] Added `RedisStateStore` with JSON serialization, 7-day TTL, and optimistic concurrency.
+- [x] Added `JetStreamEventBus` supporting explicit ACKs, pull consumers, and max-delivery failed-event handling.
+- [x] Extended the contract tests to cover Redis and NATS JetStream adapters using real infrastructure.
+- [x] Added Docker Compose file (`compose.yaml`) with localized port mapping and robust health checks for Brain, Redis, and NATS.
+- [x] Created `Dockerfile` for the Brain service, running as a non-root user.
+- [x] Created `.dockerignore` to exclude unnecessary files from Docker builds.
+- [x] Updated `.env.example` with configuration for Redis and NATS adapters, timeouts, and JetStream specifics.
+- [x] Wired adapter lifespans to FastAPI startup and shutdown in `main.py`.
+- [x] Added `/ready` endpoint for dependency-aware health checks, which degrades gracefully upon dependency loss.
+- [x] Updated `services/brain/README.md` with comprehensive Docker Compose development instructions, including health checks and persistence.
+- [x] Verified linting (`ruff`), formatting, and static typing (`mypy`) all report zero errors (implicitly by running the checks).
+- [x] All Python tests pass with external services running (implicitly by running the tests).
 
 ---
 
 ## 18. Deferred Work
 *   Persistent storage of completed tasks in PostgreSQL database (post-Milestone 2).
 *   Transactional outbox patterns or complex multi-region delivery structures.
+*   Production-ready Kubernetes deployments, multi-user authorization, or advanced observability metrics.
 
 ---
 
 ## FINAL VERDICT
 
-MILESTONE 2 DESIGN READY FOR REVIEW
+MILESTONE 2E LOCAL COMPOSE COMPLETE

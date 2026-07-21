@@ -3,6 +3,8 @@ pydantic
 pydantic-settings
 structlog
 uvicorn[standard]
+redis
+nats-py<3,>=2.15
 
 [dev]
 ruff

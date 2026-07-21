@@ -1,0 +1,40 @@
+# Ignore Git-related files
+.git
+.gitignore
+
+# Ignore Python-related caches and environments
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Ignore local environment files
+.env
+.env.example # Keep this for build, but exclude from final image if copied
+*.local.env
+
+# Ignore coverage artifacts
+.coverage*
+
+# Ignore editor-specific metadata
+.vscode/
+.idea/
+
+# Ignore documentation files (not needed in runtime image)
+docs/
+
+# Ignore scripts (not needed in runtime image)
+scripts/
+
+# Ignore infra files (not needed in runtime image)
+infra/
+
+# Ignore agent and app source (not needed in brain service image)
+agents/
+apps/
+plugins/
+
+# Keep packages, as they might contain shared libraries brain depends on
+# packages/

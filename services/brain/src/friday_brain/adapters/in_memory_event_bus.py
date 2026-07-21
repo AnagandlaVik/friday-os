@@ -19,12 +19,16 @@ class InMemoryEventBus:
         self.published_events: List[Event[Any]] = []
 
     async def start(self) -> None:
-        """Initialize the event bus connection and start active background consumers."""
+        """No-op for in-memory event bus."""
         pass
 
     async def stop(self) -> None:
-        """Gracefully drain active consumers and close all network connections."""
+        """No-op for in-memory event bus."""
         pass
+
+    async def is_healthy(self) -> bool:
+        """In-memory event bus is always healthy."""
+        return True
 
     def reset(self) -> None:
         """Clears subscribers and events for testing purposes."""

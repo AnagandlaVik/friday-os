@@ -13,8 +13,10 @@ src/friday_brain/adapters/__init__.py
 src/friday_brain/adapters/deterministic_plan_validator.py
 src/friday_brain/adapters/in_memory_event_bus.py
 src/friday_brain/adapters/in_memory_state_store.py
+src/friday_brain/adapters/jetstream_event_bus.py
 src/friday_brain/adapters/placeholder_planner.py
 src/friday_brain/adapters/placeholder_tool_executor.py
+src/friday_brain/adapters/redis_state_store.py
 src/friday_brain/api/__init__.py
 src/friday_brain/api/dependencies.py
 src/friday_brain/api/errors.py

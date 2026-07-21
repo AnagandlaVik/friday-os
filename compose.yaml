@@ -1,0 +1,84 @@
+# This Docker Compose file is for local development and testing ONLY.
+# It is NOT suitable for production deployment.
+# It does not provide high availability, robust security, or production-grade durability.
+# Exposed ports are bound to localhost to prevent external exposure.
+
+services:
+  brain:
+    build:
+      context: .
+      dockerfile: services/brain/Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Configure Brain to use external Redis and NATS
+      BRAIN_ADAPTER_STATE_STORE: redis
+      BRAIN_ADAPTER_EVENT_BUS: nats
+      REDIS_URL: redis://redis:6379/0
+      NATS_URL: nats://nats:4222
+      NATS_MAX_RECONNECT_ATTEMPTS: "-1"
+      REDIS_CONNECT_TIMEOUT_SEC: "10.0"
+      REDIS_COMMAND_TIMEOUT_SEC: "10.0"
+      NATS_CONNECT_TIMEOUT_SEC: "10.0"
+      # Other settings can be passed from the host .env file if present,
+      # but are configured with sane defaults in friday_brain/config.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2).read()"
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped # For local development convenience
+
+  redis:
+    image: redis:7.2-alpine # Stable Redis image
+    command: redis-server --appendonly yes # Enable AOF for local persistence testing
+    ports:
+      - "127.0.0.1:6379:6379" # Expose only to localhost
+    volumes:
+      - redis_data:/data # Named volume for persistence
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 5
+      start_period: 1s
+    restart: unless-stopped # For local development convenience
+
+
+  nats:
+    image: nats:2.10-alpine
+    command:
+      - "-js"
+      - "-sd"
+      - "/data"
+      - "-m"
+      - "8222"
+    ports:
+      - "127.0.0.1:4222:4222"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- 'http://127.0.0.1:8222/healthz?js-enabled-only=true' >/dev/null || exit 1",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  nats_data:

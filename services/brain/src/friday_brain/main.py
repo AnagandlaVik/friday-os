@@ -1,11 +1,45 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
+from structlog.stdlib import get_logger
 
 from .api import errors, routes_health, routes_tasks
 from .api.middleware import CorrelationIdMiddleware
 from friday_brain.composition import CompositionRoot
 from friday_brain.config import settings
 from .observability.logging import setup_logging
+
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """
+    FastAPI lifespan context manager for startup and shutdown events.
+    Initializes and cleans up resources like state stores and event buses.
+    """
+    composition_root: CompositionRoot = app.state.composition_root
+
+    logger.info("Application starting up...")
+
+    # Start infrastructure adapters
+    await composition_root.get_state_store().start()
+    logger.info("State store started.")
+
+    await composition_root.get_event_bus().start()
+    logger.info("Event bus started.")
+
+    yield
+
+    logger.info("Application shutting down...")
+    # Stop infrastructure adapters
+    await composition_root.get_event_bus().stop()
+    logger.info("Event bus stopped.")
+
+    await composition_root.get_state_store().stop()
+    logger.info("State store stopped.")
 
 
 def create_app(composition_root: CompositionRoot | None = None) -> FastAPI:
@@ -21,6 +55,7 @@ def create_app(composition_root: CompositionRoot | None = None) -> FastAPI:
         title=settings.app_name,
         version="0.1.0",
         description="FRIDAY Brain Service - Milestone 1",
+        lifespan=lifespan,  # Wire lifespan events
     )
     app.state.composition_root = composition_root
 
