@@ -37,9 +37,10 @@ class InMemoryStateStore:
             existing = self._tasks.get(task.id)
             if existing and existing.version != task.version:
                 from friday_brain.contracts.errors import InvalidStateTransitionError
+
                 raise InvalidStateTransitionError(
                     from_state=f"version {existing.version}",
-                    to_state=f"version {task.version}"
+                    to_state=f"version {task.version}",
                 )
             task.version += 1
             # Store a copy to prevent mutation outside the store

@@ -7,6 +7,8 @@ Requires-Dist: pydantic
 Requires-Dist: pydantic-settings
 Requires-Dist: structlog
 Requires-Dist: uvicorn[standard]
+Requires-Dist: redis
+Requires-Dist: nats-py<3,>=2.15
 Provides-Extra: test
 Requires-Dist: pytest; extra == "test"
 Requires-Dist: pytest-asyncio; extra == "test"
