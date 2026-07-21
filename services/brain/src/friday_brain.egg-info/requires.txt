@@ -1,0 +1,15 @@
+fastapi
+pydantic
+pydantic-settings
+structlog
+uvicorn[standard]
+
+[dev]
+ruff
+mypy
+
+[test]
+pytest
+pytest-asyncio
+httpx
+pytest-repeat
