@@ -50,6 +50,8 @@ async def version_check() -> VersionResponse:
 async def _check_component(
     name: str,
     health_check: Awaitable[bool],
+    *,
+    timeout_sec: float,
 ) -> tuple[
     str,
     ComponentHealthResponse,
@@ -57,7 +59,10 @@ async def _check_component(
     started_at = perf_counter()
 
     try:
-        healthy = await health_check
+        healthy = await asyncio.wait_for(
+            health_check,
+            timeout=timeout_sec,
+        )
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -154,7 +159,14 @@ async def readiness_check(
     root: CompositionRoot = request.app.state.composition_root
 
     results = await asyncio.gather(
-        *[_check_component(name, check) for name, check in _configured_checks(root)]
+        *[
+            _check_component(
+                name,
+                check,
+                timeout_sec=settings.health_check_timeout_sec,
+            )
+            for name, check in _configured_checks(root)
+        ]
     )
 
     components = dict(results)

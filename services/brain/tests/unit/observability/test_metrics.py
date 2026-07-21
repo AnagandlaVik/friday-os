@@ -51,3 +51,34 @@ def test_metrics_never_include_payloads() -> None:
     assert "private prompt" not in output
     assert "file content" not in output
     assert "authorization" not in output.casefold()
+
+
+def test_metrics_are_thread_safe() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    metrics = MetricsRegistry()
+
+    def record_batch() -> None:
+        for _ in range(500):
+            metrics.record_task_transition(state="completed")
+            metrics.record_tool_execution(
+                tool_name="echo",
+                outcome="success",
+                error_code=None,
+                duration_seconds=0.001,
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(record_batch) for _ in range(8)]
+
+        for future in futures:
+            future.result()
+
+    output = metrics.render_prometheus()
+
+    assert 'friday_brain_task_transitions_total{state="completed"} 4000.0' in output
+    assert (
+        "friday_brain_tool_executions_total"
+        '{error_code="none",outcome="success",'
+        'tool="echo"} 4000.0' in output
+    )

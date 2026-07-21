@@ -222,3 +222,35 @@ async def test_readiness_includes_component_details() -> None:
     )
     assert response.components["task_repository"].healthy is True
     assert response.components["task_repository"].duration_ms >= 0
+
+
+class HangingHealthComponent:
+    async def is_healthy(self) -> bool:
+        await __import__("asyncio").sleep(60)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_readiness_times_out_hanging_component(
+    monkeypatch,
+) -> None:
+    from friday_brain.api import routes_health
+
+    root = FakeCompositionRoot()
+    root.task_repository = HangingHealthComponent()
+
+    monkeypatch.setattr(
+        routes_health.settings,
+        "health_check_timeout_sec",
+        0.01,
+    )
+
+    response = await readiness_check(make_request(root))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 503
+
+    payload = json.loads(response.body)
+
+    assert "task_repository" in payload["details"]["unhealthy_components"]
+    assert payload["details"]["components"]["task_repository"]["healthy"] is False
