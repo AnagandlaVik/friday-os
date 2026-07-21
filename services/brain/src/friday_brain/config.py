@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     environment: str = "development"
     host: str = "127.0.0.1"
     port: int = 8000
+    log_level: str = "INFO"
+    service_version: str = "0.7.0"
+    build_sha: str = "development"
+    health_check_timeout_sec: float = 2.0
 
     # CORS settings
     # For Milestone 1, we are being restrictive.

@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
+from structlog.contextvars import bound_contextvars
 
 from friday_brain.application.durable_checkpoint_runner import (
     CheckpointRunResult,
@@ -23,6 +24,7 @@ from friday_brain.contracts.events import (
     TaskPlanValidatedPayload,
 )
 from friday_brain.contracts.tasks import Task, TaskState
+from friday_brain.observability.metrics import MetricsRegistry
 from friday_brain.protocols.execution_lease_repository import (
     ExecutionLease,
     ExecutionLeaseRepository,
@@ -54,6 +56,7 @@ class DurableTaskProcessor:
         worker_id: str,
         lease_duration_sec: float = 30.0,
         heartbeat_interval_sec: float = 10.0,
+        metrics_registry: MetricsRegistry | None = None,
     ) -> None:
         if not worker_id:
             raise ValueError("Worker ID cannot be empty.")
@@ -78,8 +81,22 @@ class DurableTaskProcessor:
         self._worker_id = worker_id
         self._lease_duration_sec = lease_duration_sec
         self._heartbeat_interval_sec = heartbeat_interval_sec
+        self._metrics_registry = metrics_registry
 
-    async def process_task(self, task_id: UUID) -> Task:
+    async def process_task(
+        self,
+        task_id: UUID,
+    ) -> Task:
+        with bound_contextvars(
+            task_id=str(task_id),
+            worker_id=self._worker_id,
+        ):
+            return await self._process_task_with_context(task_id)
+
+    async def _process_task_with_context(
+        self,
+        task_id: UUID,
+    ) -> Task:
         task = await self._get_task_or_fail(task_id)
 
         if self._is_terminal(task):
@@ -233,7 +250,7 @@ class DurableTaskProcessor:
             )
 
         if task.state == TaskState.PENDING:
-            task = await self._transition_with_event(
+            task = await self._transition_with_metrics(
                 task=task,
                 new_state=TaskState.PLANNING,
                 event_type="task.planning_started",
@@ -260,7 +277,7 @@ class DurableTaskProcessor:
             )
 
         if task.state == TaskState.PLANNING:
-            task = await self._transition_with_event(
+            task = await self._transition_with_metrics(
                 task=task,
                 new_state=TaskState.EXECUTING,
                 event_type="task.execution_started",
@@ -360,7 +377,7 @@ class DurableTaskProcessor:
 
         task.result = result.output
 
-        return await self._transition_with_event(
+        return await self._transition_with_metrics(
             task=task,
             new_state=TaskState.COMPLETED,
             event_type="task.completed",
@@ -384,7 +401,7 @@ class DurableTaskProcessor:
             lease_token=lease_token,
         )
 
-        return await self._transition_with_event(
+        return await self._transition_with_metrics(
             task=task,
             new_state=TaskState.CANCELLED,
             event_type="task.cancelled",
@@ -417,7 +434,7 @@ class DurableTaskProcessor:
             "details": error_details,
         }
 
-        return await self._transition_with_event(
+        return await self._transition_with_metrics(
             task=task,
             new_state=TaskState.FAILED,
             event_type="task.failed",
@@ -446,6 +463,25 @@ class DurableTaskProcessor:
             raise RuntimeError(f"Task {task_id} was not found.")
 
         return task
+
+    async def _transition_with_metrics(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Task:
+        transitioned = await self._transition_with_event(
+            *args,
+            **kwargs,
+        )
+
+        if self._metrics_registry is not None:
+            state = transitioned.state
+            state_value = state.value if isinstance(state, TaskState) else str(state)
+            self._metrics_registry.record_task_transition(
+                state=state_value,
+            )
+
+        return transitioned
 
     async def _transition_with_event(
         self,

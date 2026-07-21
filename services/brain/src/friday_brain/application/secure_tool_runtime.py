@@ -1,10 +1,12 @@
 import asyncio
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
+from structlog.contextvars import bound_contextvars
 
 from friday_brain.application.tool_registry import (
     ToolNotRegisteredError,
@@ -17,6 +19,7 @@ from friday_brain.contracts.tools import (
     ToolInvocation,
     ToolPermission,
 )
+from friday_brain.observability.metrics import MetricsRegistry
 from friday_brain.protocols.authorization_repository import (
     AuthorizationRepository,
 )
@@ -114,6 +117,7 @@ class SecureToolRuntime:
         worker_id: str | None = None,
         reservation_duration_sec: float = 30.0,
         heartbeat_interval_sec: float = 10.0,
+        metrics_registry: MetricsRegistry | None = None,
     ) -> None:
         if reservation_duration_sec <= 0:
             raise ValueError("Invocation reservation duration must be positive.")
@@ -139,6 +143,7 @@ class SecureToolRuntime:
         self._worker_id = worker_id
         self._reservation_duration_sec = reservation_duration_sec
         self._heartbeat_interval_sec = heartbeat_interval_sec
+        self._metrics_registry = metrics_registry
 
         if handlers is not None:
             for tool_name, handler in handlers.items():
@@ -160,6 +165,74 @@ class SecureToolRuntime:
         self._handlers[tool_name] = handler
 
     async def execute(
+        self,
+        invocation: ToolInvocation,
+        *,
+        granted_permissions: frozenset[ToolPermission] = frozenset(),
+        confirmation_granted: bool = False,
+        lease_token: UUID | None = None,
+    ) -> ToolExecutionResult:
+        logging_context: dict[str, object] = {
+            "task_id": str(invocation.task_id),
+            "checkpoint_id": str(invocation.checkpoint_id),
+            "tool_name": invocation.tool_name,
+        }
+
+        if self._worker_id is not None:
+            logging_context["worker_id"] = self._worker_id
+
+        started_at = perf_counter()
+
+        with bound_contextvars(**logging_context):
+            try:
+                result = await self._execute_with_context(
+                    invocation,
+                    granted_permissions=(granted_permissions),
+                    confirmation_granted=(confirmation_granted),
+                    lease_token=lease_token,
+                )
+            except asyncio.CancelledError:
+                self._record_tool_metric(
+                    tool_name=invocation.tool_name,
+                    outcome="cancelled",
+                    error_code="cancelled",
+                    started_at=started_at,
+                )
+                raise
+
+        self._record_tool_metric(
+            tool_name=invocation.tool_name,
+            outcome=("success" if result.success else "failure"),
+            error_code=(result.error.code if result.error is not None else None),
+            started_at=started_at,
+        )
+
+        return result
+
+    def _record_tool_metric(
+        self,
+        *,
+        tool_name: str,
+        outcome: str,
+        error_code: str | None,
+        started_at: float,
+    ) -> None:
+        registry = self._metrics_registry
+
+        if registry is None:
+            return
+
+        registry.record_tool_execution(
+            tool_name=tool_name,
+            outcome=outcome,
+            error_code=error_code,
+            duration_seconds=max(
+                perf_counter() - started_at,
+                0.0,
+            ),
+        )
+
+    async def _execute_with_context(
         self,
         invocation: ToolInvocation,
         *,
@@ -261,84 +334,87 @@ class SecureToolRuntime:
                 retryable=True,
             )
 
-        if claim.outcome == "cached_success":
-            return ToolExecutionResult.succeeded(claim.record.output)
+        with bound_contextvars(
+            invocation_id=str(claim.record.invocation_id),
+        ):
+            if claim.outcome == "cached_success":
+                return ToolExecutionResult.succeeded(claim.record.output)
 
-        if claim.outcome == "cached_failure":
-            return self._cached_failure(claim.record)
+            if claim.outcome == "cached_failure":
+                return self._cached_failure(claim.record)
 
-        if claim.outcome == "busy":
-            return ToolExecutionResult.failed(
-                code="tool_invocation_busy",
-                message=(
-                    "The tool invocation is already owned by another active execution."
-                ),
-                retryable=True,
-                details={"invocation_id": str(claim.record.invocation_id)},
-            )
+            if claim.outcome == "busy":
+                return ToolExecutionResult.failed(
+                    code="tool_invocation_busy",
+                    message=(
+                        "The tool invocation is already owned by another active execution."
+                    ),
+                    retryable=True,
+                    details={"invocation_id": str(claim.record.invocation_id)},
+                )
 
-        executing = await self._invocation_repository.mark_executing(
-            invocation_id=claim.record.invocation_id,
-            claim_token=claim.record.claim_token,
-            lease_token=lease_token,
-            reservation_duration_sec=(self._reservation_duration_sec),
-        )
-
-        if executing is None:
-            return ToolExecutionResult.failed(
-                code="tool_invocation_lease_lost",
-                message=(
-                    "The invocation reservation was lost before execution started."
-                ),
-                retryable=True,
-            )
-
-        try:
-            result = await self._execute_with_heartbeat(
-                definition=definition,
-                handler=handler,
-                arguments=arguments,
-                context=context,
-                record=executing,
+            executing = await self._invocation_repository.mark_executing(
+                invocation_id=claim.record.invocation_id,
+                claim_token=claim.record.claim_token,
                 lease_token=lease_token,
-            )
-        except ToolInvocationLeaseLostError as error:
-            return ToolExecutionResult.failed(
-                code="tool_invocation_lease_lost",
-                message=str(error),
-                retryable=True,
+                reservation_duration_sec=(self._reservation_duration_sec),
             )
 
-        if result.success:
-            completed = await self._invocation_repository.complete_success(
-                invocation_id=executing.invocation_id,
-                claim_token=executing.claim_token,
-                lease_token=lease_token,
-                output=result.output,
-            )
-        else:
-            if result.error is None:
-                raise RuntimeError("Failed tool result has no error.")
+            if executing is None:
+                return ToolExecutionResult.failed(
+                    code="tool_invocation_lease_lost",
+                    message=(
+                        "The invocation reservation was lost before execution started."
+                    ),
+                    retryable=True,
+                )
 
-            completed = await self._invocation_repository.complete_failure(
-                invocation_id=executing.invocation_id,
-                claim_token=executing.claim_token,
-                lease_token=lease_token,
-                error=result.error.model_dump(mode="json"),
-                retryable=result.error.retryable,
-            )
+            try:
+                result = await self._execute_with_heartbeat(
+                    definition=definition,
+                    handler=handler,
+                    arguments=arguments,
+                    context=context,
+                    record=executing,
+                    lease_token=lease_token,
+                )
+            except ToolInvocationLeaseLostError as error:
+                return ToolExecutionResult.failed(
+                    code="tool_invocation_lease_lost",
+                    message=str(error),
+                    retryable=True,
+                )
 
-        if completed is None:
-            return ToolExecutionResult.failed(
-                code="tool_invocation_lease_lost",
-                message=(
-                    "The invocation reservation was lost "
-                    "before its result could be persisted."
-                ),
-                retryable=True,
-            )
+            if result.success:
+                completed = await self._invocation_repository.complete_success(
+                    invocation_id=executing.invocation_id,
+                    claim_token=executing.claim_token,
+                    lease_token=lease_token,
+                    output=result.output,
+                )
+            else:
+                if result.error is None:
+                    raise RuntimeError("Failed tool result has no error.")
 
-        return result
+                completed = await self._invocation_repository.complete_failure(
+                    invocation_id=executing.invocation_id,
+                    claim_token=executing.claim_token,
+                    lease_token=lease_token,
+                    error=result.error.model_dump(mode="json"),
+                    retryable=result.error.retryable,
+                )
+
+            if completed is None:
+                return ToolExecutionResult.failed(
+                    code="tool_invocation_lease_lost",
+                    message=(
+                        "The invocation reservation was lost "
+                        "before its result could be persisted."
+                    ),
+                    retryable=True,
+                )
+
+            return result
 
     async def _authorize(
         self,

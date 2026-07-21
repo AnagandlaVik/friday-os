@@ -1,5 +1,13 @@
-from pydantic import BaseModel, Field, ConfigDict
-from .tasks import Task
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from friday_brain.contracts.authorization import (
+    AuthorizationEventType,
+)
+from friday_brain.contracts.tasks import Task
+from friday_brain.contracts.tools import ToolPermission
 
 
 class CreateTaskRequest(BaseModel):
@@ -39,15 +47,6 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     service: str = "friday-brain"
-
-
-from datetime import datetime
-from uuid import UUID
-
-from friday_brain.contracts.authorization import (
-    AuthorizationEventType,
-)
-from friday_brain.contracts.tools import ToolPermission
 
 
 class GrantTaskPermissionRequest(BaseModel):
@@ -136,10 +135,27 @@ class AuthorizationEventListResponse(BaseModel):
     events: list[AuthorizationEventResponse]
 
 
-from datetime import datetime
-from uuid import UUID
+class ComponentHealthResponse(BaseModel):
+    healthy: bool
+    duration_ms: float = Field(ge=0)
 
-from friday_brain.contracts.authorization import (
-    AuthorizationEventType,
-)
-from friday_brain.contracts.tools import ToolPermission
+    model_config = ConfigDict(extra="forbid")
+
+
+class ReadinessResponse(HealthResponse):
+    version: str
+    build_sha: str
+    environment: str
+    components: dict[
+        str,
+        ComponentHealthResponse,
+    ]
+
+
+class VersionResponse(BaseModel):
+    service: str = "friday-brain"
+    version: str
+    build_sha: str
+    environment: str
+
+    model_config = ConfigDict(extra="forbid")

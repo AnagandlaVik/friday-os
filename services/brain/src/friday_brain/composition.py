@@ -7,6 +7,7 @@ from friday_brain.application.durable_checkpoint_runner import (
 from friday_brain.application.durable_task_processor import (
     DurableTaskProcessor,
 )
+from friday_brain.observability.metrics import MetricsRegistry
 from friday_brain.protocols.execution_lease_repository import (
     ExecutionLeaseRepository,
 )
@@ -78,6 +79,7 @@ from friday_brain.security.tool_policy import ToolPolicy
 class CompositionRoot:
     def __init__(self, app_settings: Settings) -> None:
         self.settings = app_settings
+        self._metrics_registry = MetricsRegistry()
         self._tool_policy = ToolPolicy(
             allowed_operations=self.settings.allowed_operations
         )
@@ -231,6 +233,7 @@ class CompositionRoot:
             heartbeat_interval_sec=(
                 self.settings.tool_invocation_heartbeat_interval_sec
             ),
+            metrics_registry=self._metrics_registry,
         )
         self._tool_executor = PlaceholderToolExecutor(
             tool_policy=self.get_tool_policy(),
@@ -261,6 +264,7 @@ class CompositionRoot:
                 worker_id=self._worker_id,
                 lease_duration_sec=(self.settings.execution_lease_duration_sec),
                 heartbeat_interval_sec=(self.settings.execution_heartbeat_interval_sec),
+                metrics_registry=self._metrics_registry,
             )
 
         self._recovery_worker: RecoveryWorker | None = None
@@ -285,6 +289,11 @@ class CompositionRoot:
             tool_executor=self.get_tool_executor(),
             durable_processor=self._durable_processor,
         )
+
+    def get_metrics_registry(
+        self,
+    ) -> MetricsRegistry:
+        return self._metrics_registry
 
     def get_filesystem_sandbox(
         self,

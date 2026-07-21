@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel, ConfigDict
+from structlog.contextvars import get_contextvars
 
 from friday_brain.application.secure_tool_runtime import (
     SecureToolRuntime,
@@ -16,6 +17,7 @@ from friday_brain.contracts.tools import (
     ToolDefinition,
     ToolInvocation,
 )
+from friday_brain.observability.metrics import MetricsRegistry
 from friday_brain.protocols.tool_handler import (
     ToolExecutionContext,
 )
@@ -387,3 +389,109 @@ async def test_runtime_cancellation_stops_blocked_renewal() -> None:
 
     assert repository.completed_success is False
     assert repository.completed_failure is False
+
+
+class ContextCapturingHandler:
+    def __init__(self) -> None:
+        self.context: dict[str, object] | None = None
+
+    async def execute(
+        self,
+        arguments: BaseModel,
+        context: ToolExecutionContext,
+    ) -> Any:
+        del context
+        assert isinstance(
+            arguments,
+            HardeningInput,
+        )
+
+        self.context = dict(get_contextvars())
+
+        return {
+            "result": arguments.message,
+        }
+
+
+@pytest.mark.asyncio
+async def test_runtime_binds_safe_log_context() -> None:
+    repository = FakeInvocationRepository()
+    handler = ContextCapturingHandler()
+    task_id = uuid4()
+    checkpoint_id = uuid4()
+
+    runtime = SecureToolRuntime(
+        registry=make_registry(),
+        handlers={"hardening.test": handler},
+        invocation_repository=repository,
+        worker_id="context-worker",
+        reservation_duration_sec=2.0,
+        heartbeat_interval_sec=0.5,
+    )
+
+    result = await runtime.execute(
+        ToolInvocation(
+            tool_name="hardening.test",
+            arguments={"message": "private input"},
+            idempotency_key="context-test",
+            task_id=task_id,
+            checkpoint_id=checkpoint_id,
+        ),
+        lease_token=uuid4(),
+    )
+
+    assert result.success is True
+    assert handler.context is not None
+
+    assert handler.context["task_id"] == str(task_id)
+    assert handler.context["checkpoint_id"] == str(checkpoint_id)
+    assert handler.context["tool_name"] == "hardening.test"
+    assert handler.context["worker_id"] == "context-worker"
+    assert handler.context["invocation_id"] == str(repository.record.invocation_id)
+
+    assert "arguments" not in handler.context
+    assert "input" not in handler.context
+    assert "content" not in handler.context
+    assert "output" not in handler.context
+
+    assert get_contextvars() == {}
+
+
+@pytest.mark.asyncio
+async def test_runtime_records_tool_metrics() -> None:
+    repository = FakeInvocationRepository()
+    metrics = MetricsRegistry()
+    handler = ContextCapturingHandler()
+
+    runtime = SecureToolRuntime(
+        registry=make_registry(),
+        handlers={
+            "hardening.test": handler,
+        },
+        invocation_repository=repository,
+        worker_id="metrics-worker",
+        reservation_duration_sec=2.0,
+        heartbeat_interval_sec=0.5,
+        metrics_registry=metrics,
+    )
+
+    result = await runtime.execute(
+        ToolInvocation(
+            tool_name="hardening.test",
+            arguments={"message": "private"},
+            idempotency_key="metrics-test",
+            task_id=uuid4(),
+            checkpoint_id=uuid4(),
+        ),
+        lease_token=uuid4(),
+    )
+
+    assert result.success is True
+
+    output = metrics.render_prometheus()
+
+    assert "friday_brain_tool_executions_total" in output
+    assert 'tool="hardening.test"' in output
+    assert 'outcome="success"' in output
+    assert 'error_code="none"' in output
+    assert "private" not in output
