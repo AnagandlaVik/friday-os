@@ -7,8 +7,12 @@ from fastapi.responses import JSONResponse
 
 from friday_brain.api.routes_health import (
     readiness_check,
+    version_check,
 )
-from friday_brain.contracts.api import HealthResponse
+from friday_brain.contracts.api import (
+    ReadinessResponse,
+    VersionResponse,
+)
 
 
 class HealthComponent:
@@ -103,7 +107,7 @@ def make_request(
 async def test_readiness_succeeds_when_all_healthy() -> None:
     response = await readiness_check(make_request(FakeCompositionRoot()))
 
-    assert isinstance(response, HealthResponse)
+    assert isinstance(response, ReadinessResponse)
 
 
 @pytest.mark.asyncio
@@ -192,3 +196,29 @@ async def test_readiness_reports_unhealthy_authorization_repository() -> None:
     payload = json.loads(response.body)
 
     assert "authorization_repository" in payload["details"]["unhealthy_components"]
+
+
+@pytest.mark.asyncio
+async def test_version_endpoint() -> None:
+    response = await version_check()
+
+    assert isinstance(
+        response,
+        VersionResponse,
+    )
+    assert response.service == "friday-brain"
+    assert response.version
+    assert response.build_sha
+    assert response.environment
+
+
+@pytest.mark.asyncio
+async def test_readiness_includes_component_details() -> None:
+    response = await readiness_check(make_request(FakeCompositionRoot()))
+
+    assert isinstance(
+        response,
+        ReadinessResponse,
+    )
+    assert response.components["task_repository"].healthy is True
+    assert response.components["task_repository"].duration_ms >= 0

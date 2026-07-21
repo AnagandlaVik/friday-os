@@ -133,3 +133,29 @@ class AuthorizationEventResponse(BaseModel):
 
 class AuthorizationEventListResponse(BaseModel):
     events: list[AuthorizationEventResponse]
+
+
+class ComponentHealthResponse(BaseModel):
+    healthy: bool
+    duration_ms: float = Field(ge=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ReadinessResponse(HealthResponse):
+    version: str
+    build_sha: str
+    environment: str
+    components: dict[
+        str,
+        ComponentHealthResponse,
+    ]
+
+
+class VersionResponse(BaseModel):
+    service: str = "friday-brain"
+    version: str
+    build_sha: str
+    environment: str
+
+    model_config = ConfigDict(extra="forbid")
