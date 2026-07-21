@@ -181,3 +181,25 @@ async def test_api_maps_task_timeout() -> None:
 
     assert payload["code"] == "brain_task_timeout"
     assert payload["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_voice_page_is_served() -> None:
+    service = AssistantService(FakeBrainClient({"response": "Voice test"}))
+    app = create_app(service=service)
+
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://assistant.test",
+    ) as client:
+        response = await client.get("/voice")
+        home_response = await client.get("/")
+
+    assert response.status_code == 200
+    assert home_response.status_code == 200
+    assert "FRIDAY Voice" in response.text
+    assert "SpeechRecognition" in response.text
+    assert '"/v1/assist"' in response.text
+    assert "speechSynthesis" in response.text

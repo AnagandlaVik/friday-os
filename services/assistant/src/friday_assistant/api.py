@@ -1,11 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import (
-    FastAPI,
-    Request,
-    status,
-)
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from friday_brain_client import (
     BrainClient,
@@ -25,9 +21,8 @@ from friday_assistant.models import (
     ErrorResponse,
     HealthResponse,
 )
-from friday_assistant.service import (
-    AssistantService,
-)
+from friday_assistant.service import AssistantService
+from friday_assistant.voice import router as voice_router
 
 
 def create_app(
@@ -69,6 +64,8 @@ def create_app(
         lifespan=lifespan,
     )
 
+    app.include_router(voice_router)
+
     if provided_service is not None:
         app.state.assistant_service = provided_service
 
@@ -100,35 +97,41 @@ def create_app(
 
         try:
             return await assistant_service.assist(body)
+
         except BrainTaskTimeoutError as error:
             return _error_response(
-                status_code=(status.HTTP_504_GATEWAY_TIMEOUT),
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 code="brain_task_timeout",
                 message=str(error),
                 retryable=True,
                 details={
                     "task_id": str(error.task_id),
-                    "timeout_sec": (error.timeout_sec),
+                    "timeout_sec": error.timeout_sec,
                 },
             )
+
         except BrainConnectionError as error:
             return _error_response(
-                status_code=(status.HTTP_503_SERVICE_UNAVAILABLE),
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 code="brain_unavailable",
                 message=str(error),
                 retryable=True,
             )
+
         except BrainTaskCancelledError as error:
             return _error_response(
                 status_code=status.HTTP_409_CONFLICT,
                 code="task_cancelled",
                 message=str(error),
                 retryable=False,
-                details={"task_id": str(error.task.id)},
+                details={
+                    "task_id": str(error.task.id),
+                },
             )
+
         except BrainTaskFailedError as error:
             return _error_response(
-                status_code=(status.HTTP_422_UNPROCESSABLE_ENTITY),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 code=error.code,
                 message=str(error),
                 retryable=False,
@@ -137,24 +140,27 @@ def create_app(
                     "error": error.task.error,
                 },
             )
+
         except BrainResponseError as error:
             return _error_response(
-                status_code=(status.HTTP_502_BAD_GATEWAY),
+                status_code=status.HTTP_502_BAD_GATEWAY,
                 code=error.code,
                 message=error.message,
                 retryable=error.retryable,
                 details=error.details,
             )
+
         except BrainProtocolError as error:
             return _error_response(
-                status_code=(status.HTTP_502_BAD_GATEWAY),
+                status_code=status.HTTP_502_BAD_GATEWAY,
                 code="invalid_brain_response",
                 message=str(error),
                 retryable=True,
             )
+
         except BrainClientError as error:
             return _error_response(
-                status_code=(status.HTTP_502_BAD_GATEWAY),
+                status_code=status.HTTP_502_BAD_GATEWAY,
                 code="brain_client_error",
                 message=str(error),
                 retryable=True,
