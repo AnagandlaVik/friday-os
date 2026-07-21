@@ -25,6 +25,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Application starting up...")
 
     # Start infrastructure adapters
+    await composition_root.get_task_repository().start()
+    logger.info("Task repository started.")
     await composition_root.get_state_store().start()
     logger.info("State store started.")
 
@@ -39,6 +41,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Event bus stopped.")
 
     await composition_root.get_state_store().stop()
+    await composition_root.get_task_repository().stop()
+    logger.info("Task repository stopped.")
     logger.info("State store stopped.")
 
 

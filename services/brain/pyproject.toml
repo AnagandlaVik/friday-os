@@ -11,6 +11,9 @@ dependencies = [
     "uvicorn[standard]",
     "redis",
     "nats-py>=2.15,<3",
+    "sqlalchemy[asyncio]",
+    "asyncpg",
+    "alembic",
 ]
 
 [project.optional-dependencies]

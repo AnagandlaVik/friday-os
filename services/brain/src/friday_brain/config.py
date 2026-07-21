@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     allowed_operations: set[str] = {"echo"}
 
     # Adapter Configuration
+    brain_adapter_task_repository: str = "in_memory"
     brain_adapter_state_store: str = "in_memory"
     brain_adapter_event_bus: str = "in_memory"
 
@@ -45,6 +46,13 @@ class Settings(BaseSettings):
     nats_max_ack_pending: int = 2048
     nats_fetch_timeout_sec: float = 5.0  # For pull consumer
     nats_drain_timeout_sec: float = 5.0  # For graceful shutdown
+
+    # PostgreSQL settings
+    postgres_url: str = "postgresql+asyncpg://friday:friday@localhost:5432/friday"
+    postgres_pool_size: int = 5
+    postgres_max_overflow: int = 10
+    postgres_pool_timeout_sec: float = 5.0
+    postgres_command_timeout_sec: float = 5.0
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
